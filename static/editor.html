@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Personalize your design</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/base.css">
+  <link rel="stylesheet" href="/static/css/editor.css">
+  <script type="module" src="/static/js/editor.js"></script>
+</head>
+<body>
+  <div id="app" class="editor is-loading">
+    <header class="topbar">
+      <div class="topbar-title">
+        <span class="eyebrow">Personalize</span>
+        <h1 id="product-name">Loading…</h1>
+      </div>
+      <nav id="page-tabs" class="page-tabs" aria-label="Pages"></nav>
+      <button id="close-btn" class="icon-btn" type="button" hidden aria-label="Close editor">&times;</button>
+    </header>
+
+    <div id="draft-banner" class="banner" hidden>
+      This template is a <strong>draft</strong>: customers can't see it in the shop yet.
+    </div>
+
+    <main class="workspace">
+      <section class="stage" id="stage" aria-label="Design preview">
+        <div class="paper-shadow" id="paper-shadow">
+          <svg id="paper" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Live preview of your design"></svg>
+        </div>
+        <p class="stage-hint" id="stage-hint">Drop a photo onto the design &middot; drag to reposition &middot; scroll or pinch to zoom</p>
+      </section>
+
+      <aside class="panel" aria-label="Your details">
+        <div class="panel-scroll">
+          <h2 class="panel-title" id="panel-title">Your details</h2>
+          <div id="fields" class="fields"></div>
+        </div>
+        <div class="panel-footer">
+          <span id="save-status" class="save-status" aria-live="polite"></span>
+          <button id="review-btn" class="btn btn-primary" type="button" disabled>Preview &amp; approve</button>
+        </div>
+      </aside>
+    </main>
+
+    <div id="loading" class="loading-screen" role="status">
+      <div class="spinner"></div>
+      <p>Loading your design…</p>
+    </div>
+
+    <div id="proof-modal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="proof-title">
+      <div class="modal-card">
+        <header class="modal-head">
+          <h2 id="proof-title">Your print proof</h2>
+          <button class="icon-btn" type="button" data-close aria-label="Close">&times;</button>
+        </header>
+        <div class="modal-body" id="proof-body"></div>
+        <footer class="modal-foot" id="proof-foot"></footer>
+      </div>
+    </div>
+
+    <div id="toast" class="toast" role="alert" hidden></div>
+    <input id="file-input" type="file" accept="image/jpeg,image/png,image/webp" hidden>
+  </div>
+</body>
+</html>

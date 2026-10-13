@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jasmin · Admin</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/base.css">
+  <link rel="stylesheet" href="/static/css/admin.css">
+  <script type="module" src="/static/js/admin.js"></script>
+</head>
+<body>
+  <div class="admin">
+    <aside class="sidebar">
+      <a class="brand" href="#/templates">Jasmin <em>studio</em></a>
+      <nav>
+        <a href="#/templates" data-nav="templates">Templates</a>
+        <a href="#/orders" data-nav="orders">Orders</a>
+        <a href="#/fonts" data-nav="fonts">Fonts</a>
+        <a href="#/shopify" data-nav="shopify">Shopify setup</a>
+      </nav>
+      <a class="side-link" href="/demo-store" target="_blank" rel="noopener">Open demo store &nearr;</a>
+    </aside>
+    <main id="view" class="view" tabindex="-1"></main>
+  </div>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
