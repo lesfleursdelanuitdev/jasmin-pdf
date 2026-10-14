@@ -104,7 +104,7 @@ def test_tables_are_closed_to_everyone_but_their_owner(svc):
         "SELECT c.relname AS t, c.relrowsecurity AS rls FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace"
         " WHERE n.nspname=current_schema() AND c.relkind='r'"
     )
-    assert len(rows) == 5 and all(r["rls"] for r in rows)
+    assert len(rows) == 6 and all(r["rls"] for r in rows)
 
 
 def test_orders_are_listed_newest_first_with_their_items(svc, template):

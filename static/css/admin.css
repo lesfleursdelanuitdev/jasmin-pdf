@@ -726,3 +726,59 @@ pre {
     grid-row: 3;
   }
 }
+
+/* Account: stacked forms of a readable width. */
+.account-form {
+  display: grid;
+  gap: 14px;
+  max-width: 420px;
+  justify-items: start;
+}
+.account-form label {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  font-weight: 600;
+}
+.account-form input {
+  width: 100%;
+}
+.account-form .notice,
+.account-form .muted {
+  margin: 0;
+  width: 100%;
+}
+@media (max-width: 640px) {
+  .table.admins,
+  .table.admins tbody {
+    display: block;
+  }
+  .table.admins thead {
+    display: none;
+  }
+  .table.admins tr {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 6px 12px;
+    padding: 14px 0;
+    border-top: 1px solid var(--line);
+  }
+  .table.admins tr:first-child {
+    border-top: 0;
+  }
+  .table.admins td {
+    padding: 0;
+    border: 0;
+    overflow-wrap: anywhere;
+  }
+  .table.admins td:nth-child(1) {
+    grid-column: 1 / -1;
+  }
+  .table.admins td:nth-child(3) {
+    grid-column: 1 / -1;
+  }
+  .table.admins td:empty {
+    display: none;
+  }
+}

@@ -1,4 +1,4 @@
-// Jasmin studio (admin): templates, fonts, orders, Shopify setup, backups.
+// Jasmin studio (admin): templates, fonts, orders, Shopify setup, backups, account.
 const view = document.querySelector("#view");
 const render = (...nodes) => view.replaceChildren(...nodes.filter(Boolean));
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -91,6 +91,7 @@ const routes = [
   [/^#\/fonts$/, () => fontsView()],
   [/^#\/shopify$/, () => shopifyView()],
   [/^#\/backups$/, () => backupsView()],
+  [/^#\/account$/, () => accountView()],
   [/.*/, () => templatesView()],
 ];
 
@@ -824,6 +825,7 @@ api("GET", "/admin/api/me")
     const account = document.querySelector("#account");
     account.querySelector(".account-email").textContent = email;
     account.hidden = false;
+    document.querySelector('[data-nav="account"]').hidden = false;
   })
   .catch(() => {});
 
@@ -914,6 +916,128 @@ async function backupsView() {
   );
   show(data);
   if (data.running) setTimeout(() => refresh().catch(() => {}), 2000);
+}
+
+
+// ---------------------------------------------------------------------------
+// Account: your password, and who else may sign in
+// ---------------------------------------------------------------------------
+async function accountView() {
+  const data = await api("GET", "/admin/api/account");
+  const min = data.minPassword;
+
+  // Your password
+  const current = h("input", { type: "password", name: "current", autocomplete: "current-password", required: true });
+  const fresh = h("input", { type: "password", name: "new", autocomplete: "new-password", required: true, minlength: min });
+  const again = h("input", { type: "password", name: "again", autocomplete: "new-password", required: true, minlength: min });
+  const pwMsg = h("p", { class: "muted", role: "status" });
+  const pwSubmit = h("button", { class: "btn btn-primary", type: "submit", text: "Change password" });
+  const pwForm = h("form", { class: "account-form" }, [
+    h("label", {}, ["Current password", current]),
+    h("label", {}, [`New password (at least ${min} characters)`, fresh]),
+    h("label", {}, ["New password again", again]),
+    pwSubmit,
+    pwMsg,
+  ]);
+  const say = (el, text, bad = false) => {
+    el.textContent = text;
+    el.className = bad ? "notice notice-bad" : text ? "notice notice-ok" : "muted";
+  };
+  pwForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (fresh.value !== again.value) return say(pwMsg, "The two new passwords are not the same.", true);
+    pwSubmit.disabled = true;
+    try {
+      await api("POST", "/admin/api/account/password", { current: current.value, new: fresh.value });
+      pwForm.reset();
+      say(pwMsg, "Your password is changed. Use the new one the next time you sign in.");
+    } catch (err) {
+      say(pwMsg, err.message, true);
+    } finally {
+      pwSubmit.disabled = false;
+    }
+  });
+
+  // Admins
+  const listHost = h("div");
+  const adminMsg = h("p", { class: "muted", role: "status" });
+  function showAdmins(admins) {
+    listHost.replaceChildren(
+      h("table", { class: "table admins" }, [
+        h("thead", {}, [h("tr", {}, ["Email", "Role", "Added", ""].map((x) => h("th", { text: x })))]),
+        h(
+          "tbody",
+          {},
+          admins.map((a) =>
+            h("tr", {}, [
+              h("td", {}, [h("strong", { text: a.email }), a.email === data.email ? h("span", { class: "pill pill-muted", style: "margin-left:6px", text: "you" }) : null]),
+              h("td", {}, [h("span", { class: `pill ${a.owner ? "pill-ok" : "pill"}`, text: a.owner ? "owner" : "admin" })]),
+              h("td", { class: "muted", text: a.owner ? "" : `${fmtDate(a.createdAt)}${a.addedBy ? ` by ${a.addedBy}` : ""}` }),
+              h("td", {}, [
+                a.owner || a.email === data.email
+                  ? null
+                  : h("button", {
+                      class: "btn btn-small",
+                      type: "button",
+                      text: "Remove",
+                      "aria-label": `Remove ${a.email}`,
+                      onclick: async (e) => {
+                        if (!confirm(`Remove ${a.email}? They will no longer be able to sign in, and their account is deleted.`)) return;
+                        e.target.disabled = true;
+                        try {
+                          showAdmins((await api("DELETE", `/admin/api/admins/${encodeURIComponent(a.email)}`)).admins);
+                          say(adminMsg, `${a.email} was removed.`);
+                        } catch (err) {
+                          e.target.disabled = false;
+                          say(adminMsg, err.message, true);
+                        }
+                      },
+                    }),
+              ]),
+            ]),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  const email = h("input", { type: "email", name: "email", autocomplete: "off", required: true, placeholder: "name@example.com" });
+  // Shown as typed: it is a first password that you pass on to the new person.
+  const first = h("input", { type: "text", name: "password", autocomplete: "off", required: true, minlength: min, spellcheck: false });
+  const addSubmit = h("button", { class: "btn btn-primary", type: "submit", text: "Add admin" });
+  const addForm = h("form", { class: "account-form" }, [
+    h("label", {}, ["Their email address", email]),
+    h("label", {}, [`A first password for them (at least ${min} characters)`, first]),
+    addSubmit,
+    adminMsg,
+  ]);
+  addForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    addSubmit.disabled = true;
+    const address = email.value.trim();
+    try {
+      showAdmins((await api("POST", "/admin/api/admins", { email: address, password: first.value })).admins);
+      addForm.reset();
+      say(adminMsg, `${address} can now sign in. Give them the password; they can change it under Account.`);
+    } catch (err) {
+      say(adminMsg, err.message, true);
+    } finally {
+      addSubmit.disabled = false;
+    }
+  });
+
+  render(
+    h("div", { class: "view-head" }, [h("h1", { text: "Account" })]),
+    h("div", { class: "card" }, [h("h2", { text: "Your password" }), h("p", { class: "muted", text: `You are signed in as ${data.email}.` }), pwForm]),
+    h("div", { class: "card" }, [
+      h("h2", { text: "Admins" }),
+      h("p", { class: "muted", text: "Everyone here can sign in and do everything in this admin, including adding and removing admins. Owners are set where the app is installed and cannot be removed here." }),
+      listHost,
+      h("h3", { text: "Add an admin", style: "margin-top:24px" }),
+      addForm,
+    ]),
+  );
+  showAdmins(data.admins);
 }
 
 route();

@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 import httpx
 
 from . import demo_store, shopify
-from .auth import COOKIE, SESSION_SECONDS, AdminAuth, SignInRefused, SignInUnavailable
+from .auth import COOKIE, MIN_PASSWORD, SESSION_SECONDS, AccountError, AdminAuth, SignInRefused, SignInUnavailable
 from .backup import Backups, Scheduler
 from .config import ROOT, Settings, load_settings
 from .fonts import FontError
@@ -52,7 +52,7 @@ def create_app(
 ) -> FastAPI:
     settings = settings or load_settings()
     svc = Services(settings, storage)
-    auth = AdminAuth(settings, auth_transport)
+    auth = AdminAuth(settings, auth_transport, svc.db)
     shop_admin = shopify.ShopifyAdmin(settings)
     app = FastAPI(title="Jasmin PDF", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.services = svc
@@ -303,6 +303,51 @@ def create_app(
     @app.get("/admin/api/me", dependencies=admin)
     def me(request: Request):
         return {"email": auth.read(request.cookies.get(COOKIE))}
+
+    # Accounts (only with Supabase sign-in): one's own password, and who else is an admin.
+    def signed_in(request: Request) -> str:
+        email = auth.read(request.cookies.get(COOKIE))
+        if email is None:
+            raise HTTPException(404, "Accounts are managed with Supabase sign-in, which is not set up here.")
+        return email
+
+    def account_out() -> dict:
+        return {"admins": auth.admins(), "minPassword": MIN_PASSWORD}
+
+    @app.exception_handler(AccountError)
+    async def account_error(_: Request, exc: AccountError):
+        return JSONResponse({"detail": str(exc), "errors": [str(exc)]}, status_code=422)
+
+    @app.exception_handler(SignInUnavailable)
+    async def sign_in_unavailable(_: Request, exc: SignInUnavailable):
+        log.warning("Supabase Auth unavailable: %s", exc)
+        return JSONResponse({"detail": "The sign-in service cannot be reached right now. Try again in a moment."}, status_code=503)
+
+    @app.get("/admin/api/account", dependencies=admin)
+    def account(request: Request):
+        return {"email": signed_in(request), **account_out()}
+
+    @app.post("/admin/api/account/password", dependencies=admin)
+    async def change_password(request: Request):
+        email = signed_in(request)
+        if auth.throttled(f"password:{email}"):
+            return JSONResponse({"detail": "Too many attempts. Wait a few minutes and try again."}, status_code=429)
+        body = await request.json()
+        auth.change_password(email, str(body.get("current", "")), str(body.get("new", "")))
+        return {"ok": True}
+
+    @app.post("/admin/api/admins", dependencies=admin)
+    async def add_admin(request: Request):
+        email = signed_in(request)
+        body = await request.json()
+        auth.add_admin(str(body.get("email", "")), str(body.get("password", "")), email)
+        return account_out()
+
+    @app.delete("/admin/api/admins/{address}", dependencies=admin)
+    def remove_admin(address: str, request: Request):
+        auth.remove_admin(address, signed_in(request))
+        return account_out()
+
 
     def template_admin(t: dict) -> dict:
         return {

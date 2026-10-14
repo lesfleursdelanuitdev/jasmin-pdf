@@ -48,7 +48,7 @@ def test_a_backup_holds_every_row_and_every_file(site):
     svc, backups = app.state.services, app.state.backups
     info = backups.create()
     assert info["kind"] == "manual" and info["readable"]
-    assert info["tables"] == {"templates": 1, "uploads": 1, "designs": 1, "orders": 1, "order_items": 1}
+    assert info["tables"] == {"templates": 1, "uploads": 1, "designs": 1, "orders": 1, "order_items": 1, "admins": 0}
     assert info["files"] == len(svc.storage.keys()) > 10
     with zipfile.ZipFile(backups.path(info["name"])) as z:
         assert z.testzip() is None
@@ -75,7 +75,7 @@ def test_a_backup_restores_into_an_empty_site(site, tmp_path, database_url_2):
         assert svc.db.one("SELECT COUNT(*) AS n FROM templates")["n"] == 0
 
         report = restore(zip_path, svc.db, svc.storage, log=lambda _: None)
-        assert all(t["added"] == t["backup"] == 1 for t in report["tables"].values())
+        assert all(t["added"] == t["backup"] == (0 if name == "admins" else 1) for name, t in report["tables"].items())
         client, admin = TestClient(new), TestClient(new)
         admin.auth = ("admin", "jasmin")
         t = client.get("/api/templates/wedding-invitation").json()
@@ -87,7 +87,7 @@ def test_a_backup_restores_into_an_empty_site(site, tmp_path, database_url_2):
 
         # Again: nothing is added twice, and a new order item is numbered after the restored one.
         again = restore(zip_path, svc.db, svc.storage, log=lambda _: None)
-        assert all(t["added"] == 0 and t["already_there"] == 1 for t in again["tables"].values())
+        assert all(t["added"] == 0 and t["already_there"] == t["backup"] for t in again["tables"].values())
         svc.db.execute("INSERT INTO order_items (order_id, line_item_id, design_id, title, variant, quantity) VALUES (?,?,?,?,?,?)", (orders[0]["id"], "another", design["id"], "t", "", 1))
         ids = [r["id"] for r in svc.db.all("SELECT id FROM order_items ORDER BY id")]
         assert len(ids) == 2 and ids[1] > ids[0]
@@ -195,3 +195,26 @@ def test_the_schedule_makes_a_backup_when_none_exists_and_not_a_second_one(app, 
         schedule.stop()
         schedule.join(5)
     assert not schedule.is_alive()
+
+
+def test_added_admins_are_in_a_backup_and_an_older_backup_without_them_still_restores(app, tmp_path, database_url_2):
+    from app.db import now
+
+    svc, backups = app.state.services, app.state.backups
+    svc.db.execute("INSERT INTO admins (email, added_by, created_at) VALUES (?,?,?)", ("helper@example.com", "jasmin@example.com", now()))
+    zip_path = backups.path(backups.create()["name"])
+    with zipfile.ZipFile(zip_path) as z:
+        assert json.loads(z.read("database/admins.json"))[0]["email"] == "helper@example.com"
+        # The same backup as one made before admins existed: without that file.
+        older = tmp_path / "older.zip"
+        with zipfile.ZipFile(older, "w") as out:
+            for name in z.namelist():
+                if name != "database/admins.json":
+                    out.writestr(name, z.read(name))
+    new = create_app(Settings(data_dir=tmp_path / "new", database_url=database_url_2))
+    try:
+        report = restore(older, new.state.services.db, new.state.services.storage, log=lambda _: None)
+        assert report["tables"]["admins"] == {"backup": 0, "added": 0, "already_there": 0}
+        assert restore(zip_path, new.state.services.db, new.state.services.storage, log=lambda _: None)["tables"]["admins"]["added"] == 1
+    finally:
+        new.state.services.db.close()

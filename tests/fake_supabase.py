@@ -105,7 +105,37 @@ class FakeSupabaseAuth:
         self.transport = httpx.MockTransport(self.handle)
 
     def add(self, email: str, password: str, confirmed: bool = True) -> None:
-        self.users[email.lower()] = {"password": password, "confirmed": confirmed}
+        self.users[email.lower()] = {"password": password, "confirmed": confirmed, "id": f"00000000-0000-4000-8000-{len(self.users) + 1:012d}"}
+
+    def _admin(self, request: httpx.Request) -> httpx.Response:
+        """The admin API (secret key): list, create, change and delete users."""
+        if request.headers.get("apikey") != SECRET or request.headers.get("authorization") != f"Bearer {SECRET}":
+            return httpx.Response(401, json={"message": "Invalid API key"})
+        path = request.url.path.removeprefix("/auth/v1/admin/users").strip("/")
+        public = lambda email, u: {"id": u["id"], "email": email, "email_confirmed_at": "2026-10-14T00:00:00Z" if u["confirmed"] else None}
+        if request.method == "GET" and not path:
+            page, per = int(request.url.params.get("page", 1)), int(request.url.params.get("per_page", 50))
+            users = [public(e, u) for e, u in sorted(self.users.items())]
+            return httpx.Response(200, json={"users": users[(page - 1) * per : page * per], "aud": "authenticated"})
+        if request.method == "POST" and not path:
+            body = json.loads(request.content)
+            email = str(body["email"]).lower()
+            if email in self.users:
+                return httpx.Response(422, json={"code": 422, "error_code": "email_exists", "msg": "A user with this email address has already been registered"})
+            if len(body.get("password", "")) < 6:
+                return httpx.Response(422, json={"code": 422, "error_code": "weak_password", "msg": "Password should be at least 6 characters"})
+            self.add(email, body["password"], bool(body.get("email_confirm")))
+            return httpx.Response(200, json=public(email, self.users[email]))
+        email = next((e for e, u in self.users.items() if u["id"] == path), None)
+        if email is None:
+            return httpx.Response(404, json={"code": 404, "error_code": "user_not_found", "msg": "User not found"})
+        if request.method == "PUT":
+            self.users[email]["password"] = json.loads(request.content)["password"]
+            return httpx.Response(200, json=public(email, self.users[email]))
+        if request.method == "DELETE":
+            del self.users[email]
+            return httpx.Response(200, json={})
+        return httpx.Response(405)
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -113,6 +143,8 @@ class FakeSupabaseAuth:
             raise self.fail_with
         if self.fail_with:
             return httpx.Response(self.fail_with, text="upstream trouble")
+        if request.url.path.startswith("/auth/v1/admin/users"):
+            return self._admin(request)
         assert request.method == "POST" and request.url.path == "/auth/v1/token", request.url
         assert request.url.params.get("grant_type") == "password"
         if request.headers.get("apikey") != PUBLISHABLE:
@@ -131,7 +163,7 @@ class FakeSupabaseAuth:
                 "expires_at": 1790000000,
                 "refresh_token": "fake-refresh-token",
                 "user": {
-                    "id": "00000000-0000-4000-8000-000000000001",
+                    "id": user["id"],
                     "aud": "authenticated",
                     "role": "authenticated",
                     # Supabase stores and returns addresses in lower case.

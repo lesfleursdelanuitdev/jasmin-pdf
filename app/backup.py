@@ -37,6 +37,7 @@ TABLES = {
     "designs": ("id",),
     "orders": ("id",),
     "order_items": ("order_id", "line_item_id"),
+    "admins": ("email",),
 }
 NAME = re.compile(r"jasmin-backup-(\d{8}T\d{6}Z)\.zip")
 STAMP = "%Y%m%dT%H%M%SZ"
@@ -252,7 +253,9 @@ def restore(zip_path: Path, db, storage, log: Callable[[str], None] = print, dry
         bad = [k for k in files if k.split("/")[0] not in FOLDERS or ".." in k.split("/") or k.startswith("/")]
         if bad:
             raise BackupError(f"unexpected file paths in the backup: {bad[:3]}")
-        rows = {t: json.loads(z.read(f"database/{t}.json")) for t in TABLES}
+        names = set(z.namelist())
+        # A table added after the backup was made is simply not in it.
+        rows = {t: json.loads(z.read(f"database/{t}.json")) if f"database/{t}.json" in names else [] for t in TABLES}
         report: dict = {"created": manifest["created"], "files": {"backup": len(files)}, "tables": {}}
         log(f"backup of {manifest['created']}: " + ", ".join(f"{len(r)} {t}" for t, r in rows.items()) + f", {len(files)} files")
         if dry_run:

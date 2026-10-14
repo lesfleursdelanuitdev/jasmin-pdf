@@ -74,6 +74,11 @@ CREATE TABLE IF NOT EXISTS order_items (
     error TEXT,
     UNIQUE(order_id, line_item_id)
 );
+CREATE TABLE IF NOT EXISTS admins (
+    email TEXT PRIMARY KEY,                        -- lower case; may sign in to the admin
+    added_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -164,7 +169,7 @@ def _statements(script: str) -> list[str]:
 # roles "anon" and "authenticated", using a key that is public by design: row
 # level security with no policy shuts that door (the owner is not subject to it),
 # and the roles lose their table privileges as well.
-PG_TABLES = ("templates", "uploads", "designs", "orders", "order_items")
+PG_TABLES = ("templates", "uploads", "designs", "orders", "order_items", "admins")
 PG_LOCKDOWN = [f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY" for t in PG_TABLES] + [
     """
     DO $$
@@ -172,7 +177,7 @@ PG_LOCKDOWN = [f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY" for t in PG_TABLES] 
     BEGIN
       FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
         IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
-          EXECUTE format('REVOKE ALL ON TABLE templates, uploads, designs, orders, order_items FROM %I', r);
+          EXECUTE format('REVOKE ALL ON TABLE templates, uploads, designs, orders, order_items, admins FROM %I', r);
           EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM %I', r);
         END IF;
       END LOOP;
