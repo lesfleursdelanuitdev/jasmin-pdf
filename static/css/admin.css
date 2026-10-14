@@ -52,6 +52,15 @@
   color: #fff;
 }
 
+/* The menu button exists only on a phone; on wider screens its wrapper is not a box at all. */
+.menu-toggle {
+  display: none;
+}
+
+.side-menu {
+  display: contents;
+}
+
 .side-link {
   margin-top: auto;
   color: #d9cfc4;
@@ -580,12 +589,15 @@ pre {
 .steps {
   counter-reset: step;
   display: grid;
+  /* One column that may shrink: a long line of code inside a step scrolls in its own box. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
 
 .step {
   position: relative;
   padding-left: 48px;
+  min-width: 0;
 }
 
 .step::before {
@@ -651,43 +663,264 @@ pre {
 
 @media (max-width: 760px) {
   .admin {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
+  /* A slim bar with the name and a Menu button; the menu itself folds out under it. */
   .sidebar {
-    position: static;
+    position: sticky;
+    top: 0;
+    z-index: 40;
     height: auto;
     flex-direction: row;
     flex-wrap: wrap;
     align-items: center;
-    padding: 12px 16px;
+    justify-content: space-between;
+    gap: 0 12px;
+    padding: 6px 16px;
+  }
+
+  .brand {
+    font-size: 24px;
+    padding: 0;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .menu-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 14px;
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    border-radius: 999px;
+    background: transparent;
+    color: #fff;
+    font: 600 14px var(--font-ui);
+    cursor: pointer;
+  }
+
+  .menu-toggle::before {
+    content: "";
+    width: 16px;
+    height: 10px;
+    border-top: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+  }
+
+  .menu-toggle[aria-expanded="true"] {
+    background: rgba(255, 255, 255, 0.12);
+  }
+
+  .side-menu {
+    display: none;
+    flex-basis: 100%;
+    padding: 6px 0 12px;
+  }
+
+  .sidebar.menu-open .side-menu {
+    display: grid;
+    gap: 10px;
   }
 
   .sidebar nav {
-    flex-direction: row;
-    flex-wrap: wrap;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .sidebar nav a {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 0 12px;
+    font-size: 16px;
   }
 
   .side-link {
     margin-top: 0;
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 0 12px;
+    font-size: 15px;
+  }
+
+  .account {
+    padding: 12px 12px 0;
+    font-size: 14px;
   }
 
   .view {
     padding: 20px 16px 48px;
+    min-width: 0;
   }
 
   .upload-form,
   .form-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: 1fr !important;
   }
 
   .font-row,
   .item-row {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .font-sample {
+    font-size: 24px;
+  }
+
+  .item-actions {
+    justify-content: flex-start;
   }
 
   .kv {
     grid-template-columns: 1fr;
+  }
+
+  /* Big enough to tap: 44px at least. */
+  .btn,
+  .btn-small,
+  .view select {
+    min-height: 44px;
+  }
+
+  .btn-small {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .crumb,
+  .view details > summary,
+  .view p > a:only-child {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  .el-card summary {
+    min-height: 52px;
+  }
+
+  .view label.check {
+    min-height: 44px;
+    align-items: center;
+  }
+
+  .view input[type="checkbox"] {
+    width: 22px;
+    height: 22px;
+  }
+
+  /* 16px keeps iPhones from zooming the page when a field is tapped. */
+  .view input:not([type="checkbox"]):not([type="file"]),
+  .view textarea,
+  .view select {
+    font-size: 16px;
+  }
+
+  .view input[type="file"] {
+    font-size: 15px;
+    max-width: 100%;
+    min-height: 44px;
+  }
+
+  /* Nothing may be wider than the screen: long code scrolls inside its own box, long words wrap. */
+  .view pre {
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .view code,
+  .view .kv > *,
+  .view td {
+    overflow-wrap: anywhere;
+  }
+
+  .card {
+    min-width: 0;
+  }
+
+  .view-head {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  /* The preview of a template is not pinned on a phone; only the box that is selected is
+     dragged, so a finger on any other part of the picture still scrolls the page. */
+  .preview-card {
+    position: static;
+  }
+
+  .preview-wrap {
+    padding: 12px;
+  }
+
+  .box.selected,
+  .handle {
+    touch-action: none;
+  }
+
+  .savebar {
+    bottom: 0;
+    padding-bottom: calc(10px + env(safe-area-inset-bottom));
+  }
+
+  /* Orders: each one is a block that opens the order, not a row of six narrow columns. */
+  .table.orders,
+  .table.orders tbody {
+    display: block;
+  }
+
+  .table.orders thead {
+    display: none;
+  }
+
+  .table.orders tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 4px 12px;
+    padding: 14px 16px;
+    border-top: 1px solid var(--line);
+  }
+
+  .table.orders tr:first-child {
+    border-top: 0;
+  }
+
+  .table.orders td {
+    padding: 0;
+    border: 0;
+  }
+
+  .table.orders td:nth-child(2),
+  .table.orders td:nth-child(3),
+  .table.orders td:nth-child(4) {
+    grid-column: 1;
+    color: var(--ink-2);
+  }
+
+  .table.orders td:nth-child(5) {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+
+  .table.orders td:nth-child(6) {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: end;
+  }
+
+  /* The layers of a template: the long layer names may wrap. */
+  .layers {
+    width: 100%;
+    table-layout: fixed;
   }
 }
 

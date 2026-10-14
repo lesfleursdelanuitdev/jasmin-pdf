@@ -116,6 +116,22 @@ async function route() {
 }
 
 window.addEventListener("hashchange", route);
+
+// On a phone the menu is folded behind a button; it closes again when a page is chosen.
+const menuToggle = document.querySelector("#menu-toggle");
+const sidebar = document.querySelector(".sidebar");
+function setMenu(open) {
+  sidebar.classList.toggle("menu-open", open);
+  menuToggle.setAttribute("aria-expanded", String(open));
+}
+menuToggle.addEventListener("click", () => setMenu(!sidebar.classList.contains("menu-open")));
+window.addEventListener("hashchange", () => setMenu(false));
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && sidebar.classList.contains("menu-open")) {
+    setMenu(false);
+    menuToggle.focus();
+  }
+});
 window.addEventListener("beforeunload", (e) => {
   if (leaveGuard && leaveGuard()) e.preventDefault();
 });
@@ -654,7 +670,8 @@ async function ordersView() {
   const orders = await api("GET", "/admin/api/orders");
   const rows = orders.map((o) => {
     const ready = o.items.filter((i) => i.status === "ready").length;
-    const tr = h("tr", { class: "link", onclick: () => (location.hash = `#/orders/${encodeURIComponent(o.id)}`) }, [
+    const open = () => (location.hash = `#/orders/${encodeURIComponent(o.id)}`);
+    const tr = h("tr", { class: "link", tabindex: "0", onclick: open, onkeydown: (e) => e.key === "Enter" && open() }, [
       h("td", {}, [h("strong", { text: o.name }), o.source === "demo" ? h("span", { class: "pill pill-muted", style: "margin-left:6px", text: "demo" }) : null]),
       h("td", { text: fmtDate(o.created_at) }),
       h("td", { text: o.customer || o.email }),
@@ -667,7 +684,7 @@ async function ordersView() {
   render(
     h("div", { class: "view-head" }, [h("h1", { text: "Orders" })]),
     orders.length
-      ? h("table", { class: "table" }, [
+      ? h("table", { class: "table orders" }, [
           h("thead", {}, [
             h("tr", {}, ["Order", "Date", "Customer", "Items", "Print files", "Status"].map((x) => h("th", { text: x }))),
           ]),
