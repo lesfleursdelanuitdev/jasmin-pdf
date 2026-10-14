@@ -8,9 +8,13 @@ bucket under its path relative to the data directory (``pdfs/<file>``,
 ``print/<order>/<file>``, ``fonts/<file>``), and a file missing from the data
 directory is fetched from the bucket when it is next needed. Nothing in the
 bucket is public; the app keeps serving the files itself.
+
+The rest of the app does not build paths into the data directory: it asks the
+storage for them (see ``_Paths``), which is what keeps the two in step.
 """
 from __future__ import annotations
 
+import contextlib
 import mimetypes
 import os
 import secrets
@@ -41,7 +45,93 @@ def _clean(rel: str | os.PathLike) -> str | None:
     return "/".join(parts)
 
 
-class LocalStorage:
+class Missing(LookupError):
+    """A stored file that is asked for and is not there."""
+
+
+class _Paths:
+    """How the rest of the app reaches a stored file: through these methods, never by building a path.
+
+    Reading goes through ``path`` / ``tree`` (the file is fetched first when the data directory
+    does not have it), writing through ``writing`` / ``writing_tree`` / ``write`` (the result is
+    stored when the block ends), removing through ``remove`` / ``remove_tree`` (both places).
+    So a new feature cannot forget to store what it wrote or to fetch what it reads.
+    """
+
+    root: Path
+
+    def local(self, rel: str) -> Path:
+        """Where ``rel`` lives in the data directory. For this module and for tests; it fetches and stores nothing."""
+        key = _clean(rel)
+        if key is None:
+            raise Missing(str(rel))
+        return self.root / key
+
+    def path(self, rel: str) -> Path:
+        """The file, in the data directory and ready to read. Raises Missing when it exists nowhere."""
+        if not self.ensure(rel):
+            raise Missing(str(rel))
+        return self.local(rel)
+
+    def has(self, rel: str) -> bool:
+        return self.ensure(rel)
+
+    def tree(self, rel_dir: str) -> Path | None:
+        """The directory with all its files, or None when nothing is stored under it."""
+        return self.local(rel_dir) if self.ensure_tree(rel_dir) else None
+
+    def folder(self, rel_dir: str) -> Path:
+        """A top-level folder of the data directory, made if it is not there (for code that serves or scans one)."""
+        path = self.local(rel_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @contextlib.contextmanager
+    def writing(self, rel: str):
+        """``with storage.writing(rel) as path:`` write the file at ``path``; it is stored when the block ends well."""
+        path = self.local(rel)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        yield path
+        self.put(rel)
+
+    def write(self, rel: str, data: bytes) -> None:
+        with self.writing(rel) as path:
+            path.write_bytes(data)
+
+    @contextlib.contextmanager
+    def writing_tree(self, rel_dir: str, clear: bool = True):
+        """The same for a directory. With ``clear`` what was stored under it before is removed first."""
+        path = self.local(rel_dir)
+        if clear:
+            self.remove_tree(rel_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        yield path
+        self.put_tree(rel_dir)
+
+    def copy_tree(self, source_dir: str, dest_dir: str) -> bool:
+        """Store a copy of one directory under another name; False when the source is not stored."""
+        source = self.tree(source_dir)
+        if source is None:
+            return False
+        dest = self.local(dest_dir)
+        shutil.rmtree(dest, ignore_errors=True)  # a copy that failed half-way may have left it behind
+        shutil.copytree(source, dest)
+        self.put_tree(dest_dir)
+        return True
+
+    def remove(self, rels: list[str]) -> None:
+        """Remove single files for good, where they are stored and in the data directory."""
+        self.delete(rels)
+        for rel in rels:
+            self.local(rel).unlink(missing_ok=True)
+
+    def remove_tree(self, rel_dir: str) -> None:
+        """Remove a directory for good, where it is stored and in the data directory."""
+        self.delete_tree(rel_dir)
+        shutil.rmtree(self.local(rel_dir), ignore_errors=True)
+
+
+class LocalStorage(_Paths):
     """Files live in the data directory only."""
 
     remote = False
@@ -90,7 +180,7 @@ class LocalStorage:
         pass
 
 
-class SupabaseStorage:
+class SupabaseStorage(_Paths):
     """The data directory, written through to a private Supabase Storage bucket."""
 
     remote = True

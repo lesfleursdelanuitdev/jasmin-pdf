@@ -263,14 +263,13 @@ def restore(zip_path: Path, db, storage, log: Callable[[str], None] = print, dry
         if storage.remote:
             storage.ensure_bucket()
         for n, key in enumerate(files, 1):
-            dest = storage.root / key
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            with z.open(f"files/{key}") as src, dest.open("wb") as out:
-                for chunk in iter(lambda: src.read(1024 * 1024), b""):
-                    out.write(chunk)
-            if _sha256(dest) != manifest["files"][key]:
-                raise BackupError(f"{key} in the backup does not match its checksum")
-            storage.put(key)
+            # Stored when the block ends; a file that does not match its checksum never gets that far.
+            with storage.writing(key) as dest:
+                with z.open(f"files/{key}") as src, dest.open("wb") as out:
+                    for chunk in iter(lambda: src.read(1024 * 1024), b""):
+                        out.write(chunk)
+                if _sha256(dest) != manifest["files"][key]:
+                    raise BackupError(f"{key} in the backup does not match its checksum")
             if n % 25 == 0 or n == len(files):
                 log(f"  files {n}/{len(files)}")
         report["files"]["restored"] = len(files)

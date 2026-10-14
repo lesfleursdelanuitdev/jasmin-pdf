@@ -29,7 +29,7 @@ from .backup import Backups, Scheduler
 from .config import ROOT, Settings, load_settings
 from .fonts import FontError
 from .services import Invalid, NotFound, Services
-from .storage import Storage, StorageError
+from .storage import Missing, Storage, StorageError
 
 STATIC = ROOT / "static"
 # The admin and its sign-in page are never shown inside another page (the customer editor is: see frame_headers).
@@ -76,6 +76,10 @@ def create_app(
     async def not_found(_: Request, exc: NotFound):
         return JSONResponse({"detail": str(exc)}, status_code=404)
 
+    @app.exception_handler(Missing)
+    async def missing(_: Request, exc: Missing):
+        return JSONResponse({"detail": "not found"}, status_code=404)
+
     @app.exception_handler(Invalid)
     async def invalid(_: Request, exc: Invalid):
         return JSONResponse({"detail": str(exc), "errors": exc.errors}, status_code=422)
@@ -115,7 +119,7 @@ def create_app(
         return {"Content-Security-Policy": "frame-ancestors " + " ".join(settings.frame_ancestors)}
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
-    app.mount("/assets/templates", TemplateAssets(directory=svc.dirs["templates"], storage=svc.storage), name="template-assets")
+    app.mount("/assets/templates", TemplateAssets(directory=svc.storage.folder("templates"), storage=svc.storage), name="template-assets")
 
     # ------------------------------------------------------------------
     # Pages
@@ -232,9 +236,7 @@ def create_app(
         # Only the downscaled previews are public; originals stay private.
         if not re.fullmatch(r"img_[A-Za-z0-9]+-preview\.jpg", name):
             raise NotFound("not found")
-        path = svc.dirs["uploads"] / name
-        if not svc.storage.ensure(f"uploads/{name}"):
-            raise NotFound("not found")
+        path = svc.storage.path(f"uploads/{name}")
         return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
     @app.post("/api/designs")
@@ -266,9 +268,7 @@ def create_app(
             r"(proof-p\d+\.jpg|proof\.pdf|thumbnail\.jpg)", filename
         ):
             raise NotFound("not found")
-        path = svc.design_dir(design_id) / filename
-        if not svc.storage.ensure(f"designs/{design_id}/{filename}"):
-            raise NotFound("not found")
+        path = svc.storage.path(f"designs/{design_id}/{filename}")
         if filename.endswith(".pdf"):
             return FileResponse(path, media_type="application/pdf", filename=f"{design_id}-proof.pdf")
         return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
@@ -416,14 +416,7 @@ def create_app(
 
     @app.post("/admin/api/fonts", dependencies=admin)
     async def upload_font(file: UploadFile = File(...)):
-        data = await file.read()
-
-        def add() -> dict:
-            info = svc.fonts.add_upload(file.filename or "font.ttf", data)
-            svc.storage.put(f"fonts/{info.path.name}")
-            return info.public()
-
-        return await run_in_threadpool(add)
+        return await run_in_threadpool(svc.add_font, file.filename or "font.ttf", await file.read())
 
     @app.get("/admin/api/orders", dependencies=admin)
     def list_orders():
@@ -451,11 +444,7 @@ def create_app(
 
     @app.get("/admin/api/order-items/{item_id}/print.pdf", dependencies=admin)
     def print_file(item_id: int):
-        item = svc.db.one("SELECT * FROM order_items WHERE id=?", (item_id,))
-        if not item or not item["print_file"]:
-            raise NotFound("print file not ready")
-        path = svc.dirs["print"] / item["print_file"]
-        svc.storage.ensure(f"print/{item['print_file']}")
+        path = svc.print_file(item_id)
         return FileResponse(path, media_type="application/pdf", filename=path.name)
 
     @app.get("/admin/api/backups", dependencies=admin)

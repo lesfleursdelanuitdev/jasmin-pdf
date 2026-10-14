@@ -84,7 +84,7 @@ def test_old_leftovers_go_and_everything_in_use_stays(site):
 
     # Gone for good: no files in the data directory, none in the bucket.
     assert not svc.design_dir(old_draft["id"]).exists()
-    assert not list(svc.dirs["uploads"].glob(f"{lonely_old['id']}*"))
+    assert not list(svc.storage.local("uploads").glob(f"{lonely_old['id']}*"))
     if fake is not None:
         keys = fake.keys()
         assert not [k for k in keys if old_draft["id"] in k or lonely_old["id"] in k or old_draft_photo["id"] in k]

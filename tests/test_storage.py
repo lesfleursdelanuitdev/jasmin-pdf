@@ -331,3 +331,77 @@ def test_without_supabase_nothing_leaves_the_data_directory(app, svc, client, te
     payload = client.get("/api/templates/wedding-invitation").json()
     assert client.get(f"{payload['assets']}/p0-original.jpg").status_code == 200
     assert client.get(f"{payload['assets']}/nope.png").status_code == 404
+
+
+# -- the path-handing interface -------------------------------------------------
+def test_files_are_reached_through_storage_and_nowhere_else():
+    """Nothing but the storage module builds paths into the data directory, so nothing can skip storing or fetching."""
+    import re
+
+    allowed = {
+        "app/services.py": 2,  # makes the directory, and names the SQLite file in it
+        "app/main.py": 1,      # the default place for backups
+    }
+    for path in sorted((ROOT / "app").glob("**/*.py")) + sorted((ROOT / "scripts").glob("*.py")):
+        rel = path.relative_to(ROOT).as_posix()
+        text = path.read_text()
+        assert ".dirs[" not in text, rel
+        if rel in ("app/storage.py", "app/config.py"):
+            continue
+        uses = len(re.findall(r"data_dir\b", text))
+        assert uses <= allowed.get(rel, 0) or rel.startswith("scripts/"), f"{rel} uses the data directory {uses} times"
+
+
+def test_reading_fetches_writing_stores_removing_removes_both(store, fake, tmp_path):
+    from app.storage import Missing
+
+    with store.writing("uploads/a.jpg") as path:
+        path.write_bytes(b"photo")
+    store.write("print/9/b.pdf", b"%PDF")
+    assert fake.keys() == ["print/9/b.pdf", "uploads/a.jpg"]
+
+    # A second app with an empty data directory gets the files when it asks for their paths.
+    other = SupabaseStorage(tmp_path / "other", "https://proj.supabase.co", SECRET, "jasmin", transport=fake.transport)
+    assert other.path("uploads/a.jpg").read_bytes() == b"photo" and other.has("print/9/b.pdf")
+    with pytest.raises(Missing):
+        other.path("uploads/nope.jpg")
+    with pytest.raises(Missing):
+        other.path("../outside")
+
+    with store.writing_tree("templates/t/r1") as out:
+        (out / "p0.jpg").write_bytes(b"one")
+        (out / "sub").mkdir()
+        (out / "sub" / "x.png").write_bytes(b"two")
+    assert store.copy_tree("templates/t/r1", "templates/t/r2") and not store.copy_tree("templates/t/r9", "templates/t/r10")
+    assert other.tree("templates/t/r2") is not None and (other.local("templates/t/r2") / "sub" / "x.png").read_bytes() == b"two"
+    assert other.tree("templates/none") is None
+
+    # Written again with clear: what was there before is gone, in both places.
+    with store.writing_tree("templates/t/r1") as out:
+        (out / "only.jpg").write_bytes(b"new")
+    assert [k for k in fake.keys() if k.startswith("templates/t/r1/")] == ["templates/t/r1/only.jpg"]
+
+    store.remove(["uploads/a.jpg"])
+    store.remove_tree("templates/t")
+    assert fake.keys() == ["print/9/b.pdf"] and not store.local("uploads/a.jpg").exists() and not store.local("templates/t").exists()
+
+
+def test_a_file_that_failed_to_be_written_is_not_stored(store, fake):
+    with pytest.raises(RuntimeError):
+        with store.writing("uploads/half.jpg") as path:
+            path.write_bytes(b"half")
+            raise RuntimeError("the encoder fell over")
+    assert fake.keys() == []
+
+
+def test_a_print_file_that_is_gone_is_a_404_not_a_crash(app, admin, client, template):
+    design = approved_design(client)
+    svc = app.state.services
+    svc.record_order(order_payload(design["id"]), source="demo")
+    svc.generate_print_files(str(order_payload(design["id"])["id"]))
+    item = svc.db.one("SELECT * FROM order_items")
+    assert admin.get(f"/admin/api/order-items/{item['id']}/print.pdf").status_code == 200
+    svc.storage.local(f"print/{item['print_file']}").unlink()
+    assert admin.get(f"/admin/api/order-items/{item['id']}/print.pdf").status_code == 404
+    svc.storage.local(f"pdfs/{template['pdf_file']}").unlink()
+    assert admin.get(f"/admin/api/templates/{template['id']}/source.pdf").status_code == 404

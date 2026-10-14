@@ -9,7 +9,6 @@ import logging
 import math
 import re
 import secrets
-import shutil
 import threading
 import warnings
 from pathlib import Path
@@ -22,7 +21,7 @@ from .db import dumps, loads, now, open_database
 from .fonts import FontError, FontLibrary
 from .pdf import render
 from .pdf.analyze import AnalysisError, analyze_pdf, slugify
-from .storage import Storage, open_storage
+from .storage import Missing, Storage, open_storage
 
 log = logging.getLogger("jasmin")
 
@@ -131,24 +130,15 @@ class Services:
     def __init__(self, settings: Settings, storage: Storage | None = None):
         self.settings = settings
         data = settings.data_dir
-        self.dirs = {
-            "pdfs": data / "pdfs",
-            "templates": data / "templates",
-            "uploads": data / "uploads",
-            "designs": data / "designs",
-            "print": data / "print",
-            "fonts": data / "fonts",
-        }
-        for d in self.dirs.values():
-            d.mkdir(parents=True, exist_ok=True)
+        data.mkdir(parents=True, exist_ok=True)
         self.db = open_database(data / "jasmin.db", settings.database_url, settings.database_url_unpooled)
-        # The store of record for everything under data (see app/storage.py).
+        # Every file goes through this: it hands out the paths (see app/storage.py).
         self.storage = storage or open_storage(settings)
         self._upload_lock = threading.Lock()
         if self.storage.remote:
             self.storage.ensure_bucket()
             self.storage.sync_down("fonts")
-        self.fonts = FontLibrary(ROOT / "fonts", self.dirs["fonts"])
+        self.fonts = FontLibrary(ROOT / "fonts", self.storage.folder("fonts"))
 
     # ------------------------------------------------------------------
     # Templates
@@ -168,14 +158,13 @@ class Services:
         return [self._template_row(r) for r in self.db.all(sql, (status,) if status else ())]
 
     def _pdf(self, pdf_file: str) -> Path:
-        self.storage.ensure(f"pdfs/{pdf_file}")
-        return self.dirs["pdfs"] / pdf_file
+        return self.storage.path(f"pdfs/{pdf_file}")
 
     def pdf_path(self, template: dict) -> Path:
         return self._pdf(template["pdf_file"])
 
     def assets_dir(self, template_id: str, revision: int) -> Path:
-        return self.dirs["templates"] / template_id / f"r{revision}"
+        return self.storage.local(self._assets_key(template_id, revision))
 
     @staticmethod
     def _assets_key(template_id: str, revision: int) -> str:
@@ -191,10 +180,8 @@ class Services:
             raise Invalid("PDF is larger than 50 MB.")
         digest = hashlib.sha256(pdf_bytes).hexdigest()[:32]
         pdf_file = f"{digest}.pdf"
-        pdf_path = self.dirs["pdfs"] / pdf_file
-        if not self.storage.ensure(f"pdfs/{pdf_file}"):
-            pdf_path.write_bytes(pdf_bytes)
-        self.storage.put(f"pdfs/{pdf_file}")
+        self.storage.write(f"pdfs/{pdf_file}", pdf_bytes)  # named after its content: the same PDF again is the same file
+        pdf_path = self._pdf(pdf_file)
         try:
             analysis = analyze_pdf(pdf_path, self.fonts)
         except AnalysisError as exc:
@@ -215,13 +202,8 @@ class Services:
         return self.get_template(tid)
 
     def _build_assets(self, tid: str, revision: int, definition: dict, pdf_path: Path) -> list[dict]:
-        out = self.assets_dir(tid, revision)
-        if out.exists():
-            shutil.rmtree(out)
-        self.storage.delete_tree(self._assets_key(tid, revision))
-        stacks = render.build_template_assets(_render_view(definition), pdf_path, out)
-        self.storage.put_tree(self._assets_key(tid, revision))
-        return stacks
+        with self.storage.writing_tree(self._assets_key(tid, revision)) as out:
+            return render.build_template_assets(_render_view(definition), pdf_path, out)
 
     def update_template(self, template_id: str, patch: dict) -> dict:
         t = self.get_template(template_id)
@@ -253,13 +235,10 @@ class Services:
                 raise Invalid("status must be draft or published")
             status = patch["status"]
         revision = t["revision"] + 1
-        if rebuild or not self.storage.ensure_tree(self._assets_key(template_id, t["revision"])):
+        # The new revision gets the previous one's images, unless an element was switched on or
+        # off (then they are built again) or the previous ones are not stored any more.
+        if rebuild or not self.storage.copy_tree(self._assets_key(template_id, t["revision"]), self._assets_key(template_id, revision)):
             definition["stacks"] = self._build_assets(template_id, revision, definition, self.pdf_path(t))
-        else:
-            # A save that failed half-way may have left this revision's folder behind.
-            shutil.rmtree(self.assets_dir(template_id, revision), ignore_errors=True)
-            shutil.copytree(self.assets_dir(template_id, t["revision"]), self.assets_dir(template_id, revision))
-            self.storage.put_tree(self._assets_key(template_id, revision))
         self.db.execute(
             "UPDATE templates SET name=?, status=?, revision=?, definition=?, product_handles=?, updated_at=? WHERE id=?",
             (name, status, revision, dumps(definition), dumps(handles), now(), template_id),
@@ -295,8 +274,7 @@ class Services:
     def delete_template(self, template_id: str) -> None:
         self.get_template(template_id)
         self.db.execute("DELETE FROM templates WHERE id=?", (template_id,))
-        shutil.rmtree(self.dirs["templates"] / template_id, ignore_errors=True)
-        self.storage.delete_tree(f"templates/{template_id}")
+        self.storage.remove_tree(f"templates/{template_id}")
 
     def template_for_product(self, handle: str) -> dict | None:
         """Published template linked to a Shopify product handle.
@@ -360,21 +338,23 @@ class Services:
         has_alpha = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
         if has_alpha:
             img = img.convert("RGBA")
-            path = self.dirs["uploads"] / f"{uid}.png"
-            img.save(path)
+            name = f"{uid}.png"
+            with self.storage.writing(f"uploads/{name}") as path:
+                img.save(path)
         else:
             img = img.convert("RGB")
-            path = self.dirs["uploads"] / f"{uid}.jpg"
-            img.save(path, quality=95, subsampling=0)
+            name = f"{uid}.jpg"
+            with self.storage.writing(f"uploads/{name}") as path:
+                img.save(path, quality=95, subsampling=0)
         # Scaled straight from the photo: no second full-size copy is made for it.
         preview = img if max(img.size) <= PREVIEW_EDGE else ImageOps.contain(img, (PREVIEW_EDGE, PREVIEW_EDGE), Image.LANCZOS)
-        preview_path = self.dirs["uploads"] / f"{uid}-preview.jpg"
-        preview.convert("RGB").save(preview_path, quality=85)
-        self.storage.put(f"uploads/{path.name}")
-        self.storage.put(f"uploads/{preview_path.name}")
+        preview_name = f"{uid}-preview.jpg"
+        with self.storage.writing(f"uploads/{preview_name}") as path:
+            preview.convert("RGB").save(path, quality=85)
+        # The files are stored before the row exists: a row never points at a photo that is not there.
         self.db.execute(
             "INSERT INTO uploads (id, filename, path, preview_path, width, height, created_at) VALUES (?,?,?,?,?,?,?)",
-            (uid, filename[:200], path.name, preview_path.name, img.width, img.height, now()),
+            (uid, filename[:200], name, preview_name, img.width, img.height, now()),
         )
         return self.upload_public(self.get_upload(uid))
 
@@ -397,8 +377,10 @@ class Services:
             row = self.get_upload(upload_id)
         except NotFound:
             return None
-        self.storage.ensure(f"uploads/{row['path']}")
-        return render.UploadRef(self.dirs["uploads"] / row["path"], row["width"], row["height"])
+        try:
+            return render.UploadRef(self.storage.path(f"uploads/{row['path']}"), row["width"], row["height"])
+        except Missing:
+            return None
 
     # ------------------------------------------------------------------
     # Designs
@@ -481,7 +463,7 @@ class Services:
         return out
 
     def design_dir(self, design_id: str) -> Path:
-        return self.dirs["designs"] / design_id
+        return self.storage.local(f"designs/{design_id}")
 
     def _render(self, definition: dict, values: dict) -> bytes:
         t_pdf = self._pdf(definition["_pdf_file"])
@@ -506,22 +488,21 @@ class Services:
         if errors:
             return {"errors": errors, "warnings": warnings, "pages": []}
         pdf = self._render(definition, d["values"])
-        out = self.design_dir(design_id)
-        out.mkdir(parents=True, exist_ok=True)
-        (out / "proof.pdf").write_bytes(pdf)
         stamp = secrets.token_hex(4)
         pages = []
-        for p in range(len(definition["pages"])):
-            render.render_png(pdf, p, PROOF_DPI).save(out / f"proof-p{p}.jpg", quality=88)
-            pages.append(f"/api/designs/{design_id}/proof-p{p}.jpg?v={stamp}")
-        thumb = render.render_png(pdf, 0, 60)
-        trim = definition["pages"][0]["trimBox"]
-        k = 60 / 72
-        thumb = thumb.crop(
-            (round(trim["x"] * k), round(trim["y"] * k), round((trim["x"] + trim["w"]) * k), round((trim["y"] + trim["h"]) * k))
-        )
-        thumb.save(out / "thumbnail.jpg", quality=85)
-        self.storage.put_tree(f"designs/{design_id}")
+        # Every file of a proof is written again each time, so nothing has to be cleared first.
+        with self.storage.writing_tree(f"designs/{design_id}", clear=False) as out:
+            (out / "proof.pdf").write_bytes(pdf)
+            for p in range(len(definition["pages"])):
+                render.render_png(pdf, p, PROOF_DPI).save(out / f"proof-p{p}.jpg", quality=88)
+                pages.append(f"/api/designs/{design_id}/proof-p{p}.jpg?v={stamp}")
+            thumb = render.render_png(pdf, 0, 60)
+            trim = definition["pages"][0]["trimBox"]
+            k = 60 / 72
+            thumb = thumb.crop(
+                (round(trim["x"] * k), round(trim["y"] * k), round((trim["x"] + trim["w"]) * k), round((trim["y"] + trim["h"]) * k))
+            )
+            thumb.save(out / "thumbnail.jpg", quality=85)
         return {"errors": [], "warnings": warnings, "pages": pages, "pdfUrl": f"/api/designs/{design_id}/proof.pdf?v={stamp}"}
 
     def approve(self, design_id: str) -> dict:
@@ -621,15 +602,13 @@ class Services:
                 raise Invalid("design was never approved by the customer")
             definition = self._definition_with_pdf(d)
             pdf = self._render(definition, d["values"])
-            folder = self.dirs["print"] / slugify(order["id"])
-            folder.mkdir(parents=True, exist_ok=True)
             order_no = slugify(order["name"] or order["id"])
-            filename = f"{order_no}-{item['line_item_id']}-{slugify(d['template_id'])}-qty{item['quantity']}.pdf"
-            (folder / filename).write_bytes(pdf)
-            self.storage.put(f"print/{folder.name}/{filename}")
+            filename = f"{order_no}-{slugify(str(item['line_item_id']))}-{slugify(d['template_id'])}-qty{item['quantity']}.pdf"
+            print_file = f"{slugify(order['id'])}/{filename}"
+            self.storage.write(f"print/{print_file}", pdf)
             self.db.execute(
                 "UPDATE order_items SET print_file=?, status='ready', error=NULL WHERE id=?",
-                (f"{folder.name}/{filename}", item_id),
+                (print_file, item_id),
             )
             self.db.execute("UPDATE designs SET status='ordered', updated_at=? WHERE id=?", (now(), d["id"]))
         except Exception as exc:  # whatever it was, the item must say so and not stay "pending" for ever
@@ -671,18 +650,26 @@ class Services:
             return report
         for design_id in drafts:
             # Files first: a row without files is harmless, files without a row would never be found again.
-            self.storage.delete_tree(f"designs/{design_id}")
-            shutil.rmtree(self.design_dir(design_id), ignore_errors=True)
+            self.storage.remove_tree(f"designs/{design_id}")
             self.db.execute("DELETE FROM designs WHERE id=? AND status='draft'", (design_id,))
         for row in uploads:
-            names = [row["path"], row["preview_path"]]
-            self.storage.delete([f"uploads/{n}" for n in names])
-            for name in names:
-                (self.dirs["uploads"] / name).unlink(missing_ok=True)
+            self.storage.remove([f"uploads/{row['path']}", f"uploads/{row['preview_path']}"])
             self.db.execute("DELETE FROM uploads WHERE id=?", (row["id"],))
         if drafts or uploads:
             log.info("cleanup: removed %s drafts and %s photos older than %s days", len(drafts), len(uploads), days)
         return report
+
+    def print_file(self, item_id: int) -> Path:
+        """The print PDF of an order item, ready to send; NotFound when it has not been made."""
+        item = self.db.one("SELECT print_file FROM order_items WHERE id=?", (item_id,))
+        if not item or not item["print_file"]:
+            raise NotFound("print file not ready")
+        return self.storage.path(f"print/{item['print_file']}")
+
+    def add_font(self, filename: str, data: bytes) -> dict:
+        info = self.fonts.add_upload(filename, data)
+        self.storage.put(f"fonts/{info.path.name}")
+        return info.public()
 
     def pending_orders(self) -> list[str]:
         """Orders with an item whose print file was never made (the app stopped while it was being rendered)."""
