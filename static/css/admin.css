@@ -59,6 +59,74 @@
   padding: 0 10px;
 }
 
+.account {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  padding: 14px 10px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 13px;
+  color: #d9cfc4;
+}
+
+.account[hidden] {
+  display: none;
+}
+
+.account-email {
+  overflow-wrap: anywhere;
+}
+
+/* Sign-in page */
+.login-page {
+  background: var(--ink);
+}
+
+.login {
+  min-height: 100vh;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 20px;
+  padding: 24px 16px;
+}
+
+.login .brand {
+  margin: 0;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 380px;
+  display: grid;
+  gap: 8px;
+}
+
+.login-card h1 {
+  font-size: 22px;
+  margin: 0 0 8px;
+}
+
+.login-card label {
+  font-weight: 600;
+  font-size: 14px;
+  margin-top: 6px;
+}
+
+.login-card input {
+  font-size: 16px;
+}
+
+.login-card .btn {
+  margin-top: 14px;
+  justify-content: center;
+  min-height: 44px;
+}
+
+.login-card .notice {
+  margin: 0 0 4px;
+}
+
 .view {
   padding: 28px 32px 64px;
   min-width: 0;

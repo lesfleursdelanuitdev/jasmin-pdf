@@ -17,6 +17,22 @@ def _bool(value: str | None, default: bool) -> bool:
 @dataclass
 class Settings:
     data_dir: Path = ROOT / "data"
+    # Postgres instead of the SQLite file in data_dir. The app's own traffic uses
+    # database_url (may be a pooled address); the schema is created over
+    # database_url_unpooled (a direct connection) when that is set.
+    database_url: str = ""
+    database_url_unpooled: str = ""
+    # Supabase Storage as the store of record for the files in data_dir (see
+    # app/storage.py). Used only when both the URL and the secret key are set.
+    supabase_url: str = ""
+    supabase_secret_key: str = ""
+    storage_bucket: str = "jasmin"
+    # Admin sign-in with Supabase Auth (see app/auth.py), used when the URL, the
+    # publishable key and at least one admin address are set. Otherwise the admin
+    # is behind HTTP Basic with admin_user / admin_password.
+    supabase_publishable_key: str = ""
+    admin_emails: list[str] = field(default_factory=list)
+    session_secret: str = ""
     # Public base URL of this app (used in Shopify snippets and webhooks).
     app_url: str = "http://localhost:8000"
     admin_user: str = "admin"
@@ -53,6 +69,14 @@ def load_settings() -> Settings:
     s = Settings()
     if env.get("JASMIN_DATA_DIR"):
         s.data_dir = Path(env["JASMIN_DATA_DIR"]).resolve()
+    s.database_url = env.get("DATABASE_URL", "").strip()
+    s.database_url_unpooled = env.get("DATABASE_URL_UNPOOLED", "").strip()
+    s.supabase_url = env.get("SUPABASE_URL", "").strip().rstrip("/")
+    s.supabase_secret_key = (env.get("SUPABASE_SECRET_KEY") or env.get("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    s.storage_bucket = env.get("SUPABASE_STORAGE_BUCKET", "").strip() or s.storage_bucket
+    s.supabase_publishable_key = (env.get("SUPABASE_PUBLISHABLE_KEY") or env.get("SUPABASE_ANON_KEY") or "").strip()
+    s.admin_emails = [e.strip().lower() for e in env.get("ADMIN_EMAILS", "").split(",") if e.strip()]
+    s.session_secret = env.get("SESSION_SECRET", "").strip()
     s.app_url = env.get("APP_URL", s.app_url).rstrip("/")
     s.admin_user = env.get("ADMIN_USER", s.admin_user)
     s.admin_password = env.get("ADMIN_PASSWORD", s.admin_password)

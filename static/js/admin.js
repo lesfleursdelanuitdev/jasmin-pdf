@@ -47,6 +47,7 @@ async function api(method, url, body) {
   }
   const res = await fetch(url, opts);
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401) location.href = "/admin/login";
   if (!res.ok) {
     const err = new Error((data.errors || [data.detail || `Request failed (${res.status})`]).join(" "));
     err.status = res.status;
@@ -814,5 +815,15 @@ async function shopifyView() {
     ]),
   );
 }
+
+// The signed-in address and a Sign out button, when the admin is behind Supabase sign-in.
+api("GET", "/admin/api/me")
+  .then(({ email }) => {
+    if (!email) return;
+    const account = document.querySelector("#account");
+    account.querySelector(".account-email").textContent = email;
+    account.hidden = false;
+  })
+  .catch(() => {});
 
 route();

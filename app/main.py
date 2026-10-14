@@ -1,12 +1,13 @@
 """HTTP application (``create_app``); the ASGI entry point is ``app.asgi:app``.
 
 Public:  /editor/{template}, /api/..., /fonts/..., /assets/...
-Admin:   /admin (HTTP Basic auth), /admin/api/...
+Admin:   /admin (Supabase sign-in at /admin/login, or HTTP Basic auth), /admin/api/...
 Shopify: /webhooks/shopify/orders-create, /static/shopify/jasmin-personalize.js
 Demo:    /demo-store (a mock Shopify storefront for local end-to-end testing)
 """
 from __future__ import annotations
 
+import html
 import json
 import logging
 import re
@@ -14,26 +15,48 @@ import secrets
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 
+import httpx
+
 from . import demo_store, shopify
+from .auth import COOKIE, SESSION_SECONDS, AdminAuth, SignInRefused, SignInUnavailable
 from .config import ROOT, Settings, load_settings
 from .fonts import FontError
 from .services import Invalid, NotFound, Services
+from .storage import Storage, StorageError
 
 STATIC = ROOT / "static"
 log = logging.getLogger("jasmin")
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+class TemplateAssets(StaticFiles):
+    """/assets/templates from the data directory, fetching a file from storage first if it is not there."""
+
+    def __init__(self, *, directory, storage: Storage):
+        super().__init__(directory=directory)
+        self.storage = storage
+
+    def lookup_path(self, path: str):
+        self.storage.ensure(f"templates/{path}")
+        return super().lookup_path(path)
+
+
+def create_app(
+    settings: Settings | None = None,
+    storage: Storage | None = None,
+    auth_transport: httpx.BaseTransport | None = None,
+) -> FastAPI:
     settings = settings or load_settings()
-    svc = Services(settings)
+    svc = Services(settings, storage)
+    auth = AdminAuth(settings, auth_transport)
     shop_admin = shopify.ShopifyAdmin(settings)
     app = FastAPI(title="Jasmin PDF", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.services = svc
     app.state.settings = settings
+    app.state.auth = auth
     app.add_middleware(GZipMiddleware, minimum_size=2048)
 
     @app.exception_handler(NotFound)
@@ -44,23 +67,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def invalid(_: Request, exc: Invalid):
         return JSONResponse({"detail": str(exc), "errors": exc.errors}, status_code=422)
 
+    @app.exception_handler(StorageError)
+    async def storage_error(_: Request, exc: StorageError):
+        log.error("file storage: %s", exc)
+        return JSONResponse({"detail": "File storage is not available right now. Please try again."}, status_code=503)
+
     @app.exception_handler(FontError)
     async def font_error(_: Request, exc: FontError):
         return JSONResponse({"detail": str(exc), "errors": [str(exc)]}, status_code=422)
 
     basic = HTTPBasic(realm="Jasmin admin")
 
-    def require_admin(creds: HTTPBasicCredentials = Depends(basic)) -> None:
+    def require_basic(creds: HTTPBasicCredentials = Depends(basic)) -> None:
         ok_user = secrets.compare_digest(creds.username.encode(), settings.admin_user.encode())
         ok_pass = secrets.compare_digest(creds.password.encode(), settings.admin_password.encode())
         if not (ok_user and ok_pass):
             raise HTTPException(401, "Invalid credentials", headers={"WWW-Authenticate": 'Basic realm="Jasmin admin"'})
 
+    def own_origin(request: Request) -> None:
+        # A browser sends Origin with every cross-site POST, PATCH, PUT and DELETE.
+        if request.method not in ("GET", "HEAD", "OPTIONS") and not auth.same_origin(
+            request.headers.get("origin"), request.headers.get("host")
+        ):
+            raise HTTPException(403, "Request from another site refused")
+
+    def require_session(request: Request) -> None:
+        own_origin(request)
+        if auth.read(request.cookies.get(COOKIE)) is None:
+            raise HTTPException(401, "Sign in required")
+
+    require_admin = require_session if auth.enabled else require_basic
+
     def frame_headers() -> dict[str, str]:
         return {"Content-Security-Policy": "frame-ancestors " + " ".join(settings.frame_ancestors)}
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
-    app.mount("/assets/templates", StaticFiles(directory=svc.dirs["templates"]), name="template-assets")
+    app.mount("/assets/templates", TemplateAssets(directory=svc.dirs["templates"], storage=svc.storage), name="template-assets")
 
     # ------------------------------------------------------------------
     # Pages
@@ -77,9 +119,65 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def editor_page(template_id: str):
         return FileResponse(STATIC / "editor.html", headers=frame_headers())
 
-    @app.get("/admin", include_in_schema=False, dependencies=[Depends(require_admin)])
-    def admin_page():
-        return FileResponse(STATIC / "admin.html")
+    if auth.enabled:
+
+        @app.get("/admin", include_in_schema=False)
+        def admin_page(request: Request):
+            if auth.read(request.cookies.get(COOKIE)) is None:
+                return RedirectResponse("/admin/login", status_code=303)
+            return FileResponse(STATIC / "admin.html", headers={"Cache-Control": "no-store"})
+
+        def login_page(message: str = "", email: str = "", status: int = 200) -> HTMLResponse:
+            page = (STATIC / "login.html").read_text(encoding="utf-8")
+            notice = f'<p class="notice notice-bad" role="alert">{html.escape(message)}</p>' if message else ""
+            page = page.replace("<!--message-->", notice).replace("{{email}}", html.escape(email, quote=True))
+            return HTMLResponse(page, status_code=status, headers={"Cache-Control": "no-store"})
+
+        @app.get("/admin/login", include_in_schema=False)
+        def login_form(request: Request):
+            if auth.read(request.cookies.get(COOKIE)) is not None:
+                return RedirectResponse("/admin", status_code=303)
+            return login_page()
+
+        @app.post("/admin/login", include_in_schema=False, dependencies=[Depends(own_origin)])
+        def login(request: Request, email: str = Form(""), password: str = Form("")):
+            email = email.strip()[:254]
+            if auth.throttled(request.client.host if request.client else "unknown"):
+                return login_page("Too many sign-in attempts. Please wait a few minutes and try again.", email, 429)
+            try:
+                address = auth.sign_in(email, password)
+            except SignInRefused:
+                return login_page("That email and password did not work.", email, 401)
+            except SignInUnavailable as exc:
+                log.error("admin sign-in: Supabase did not answer: %s", exc)
+                return login_page("Sign-in is not available right now. Please try again in a moment.", email, 503)
+            response = RedirectResponse("/admin", status_code=303)
+            response.set_cookie(
+                COOKIE,
+                auth.issue(address),
+                max_age=SESSION_SECONDS,
+                path="/admin",
+                httponly=True,
+                samesite="lax",
+                secure=auth.secure_cookie,
+            )
+            return response
+
+        @app.post("/admin/logout", include_in_schema=False, dependencies=[Depends(own_origin)])
+        def logout():
+            response = RedirectResponse("/admin/login", status_code=303)
+            response.delete_cookie(COOKIE, path="/admin", httponly=True, samesite="lax", secure=auth.secure_cookie)
+            return response
+
+    else:
+
+        @app.get("/admin", include_in_schema=False, dependencies=[Depends(require_admin)])
+        def admin_page():
+            return FileResponse(STATIC / "admin.html")
+
+        @app.get("/admin/login", include_in_schema=False)
+        def login_form():
+            return RedirectResponse("/admin", status_code=303)
 
     # ------------------------------------------------------------------
     # Public API (customer editor)
@@ -121,7 +219,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not re.fullmatch(r"img_[A-Za-z0-9]+-preview\.jpg", name):
             raise NotFound("not found")
         path = svc.dirs["uploads"] / name
-        if not path.exists():
+        if not svc.storage.ensure(f"uploads/{name}"):
             raise NotFound("not found")
         return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
@@ -155,7 +253,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ):
             raise NotFound("not found")
         path = svc.design_dir(design_id) / filename
-        if not path.exists():
+        if not svc.storage.ensure(f"designs/{design_id}/{filename}"):
             raise NotFound("not found")
         if filename.endswith(".pdf"):
             return FileResponse(path, media_type="application/pdf", filename=f"{design_id}-proof.pdf")
@@ -195,6 +293,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Admin API
     # ------------------------------------------------------------------
     admin = [Depends(require_admin)]
+
+    @app.get("/admin/api/me", dependencies=admin)
+    def me(request: Request):
+        return {"email": auth.read(request.cookies.get(COOKIE))}
 
     def template_admin(t: dict) -> dict:
         return {
@@ -244,6 +346,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/admin/api/fonts", dependencies=admin)
     async def upload_font(file: UploadFile = File(...)):
         info = svc.fonts.add_upload(file.filename or "font.ttf", await file.read())
+        svc.storage.put(f"fonts/{info.path.name}")
         return info.public()
 
     @app.get("/admin/api/orders", dependencies=admin)
@@ -272,6 +375,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not item or not item["print_file"]:
             raise NotFound("print file not ready")
         path = svc.dirs["print"] / item["print_file"]
+        svc.storage.ensure(f"print/{item['print_file']}")
         return FileResponse(path, media_type="application/pdf", filename=path.name)
 
     @app.get("/admin/api/shopify", dependencies=admin)

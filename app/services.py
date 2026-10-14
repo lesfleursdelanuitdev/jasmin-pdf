@@ -15,15 +15,16 @@ from typing import Any
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .config import ROOT, Settings
-from .db import Database, dumps, loads, now
+from .db import dumps, loads, now, open_database
 from .fonts import FontError, FontLibrary
 from .pdf import render
 from .pdf.analyze import AnalysisError, analyze_pdf, slugify
+from .storage import Storage, open_storage
 
 log = logging.getLogger("jasmin")
 
 MAX_UPLOAD_BYTES = 30 * 1024 * 1024
-MAX_PDF_BYTES = 60 * 1024 * 1024
+MAX_PDF_BYTES = 50 * 1024 * 1024  # the storage bucket takes files up to 50 MB
 PREVIEW_EDGE = 1600
 PROOF_DPI = 110
 ORDER_STATUSES = ("received", "in_production", "shipped")
@@ -118,7 +119,7 @@ def _hex_color(value: str) -> dict:
 
 
 class Services:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, storage: Storage | None = None):
         self.settings = settings
         data = settings.data_dir
         self.dirs = {
@@ -131,7 +132,12 @@ class Services:
         }
         for d in self.dirs.values():
             d.mkdir(parents=True, exist_ok=True)
-        self.db = Database(data / "jasmin.db")
+        self.db = open_database(data / "jasmin.db", settings.database_url, settings.database_url_unpooled)
+        # The store of record for everything under data (see app/storage.py).
+        self.storage = storage or open_storage(settings)
+        if self.storage.remote:
+            self.storage.ensure_bucket()
+            self.storage.sync_down("fonts")
         self.fonts = FontLibrary(ROOT / "fonts", self.dirs["fonts"])
 
     # ------------------------------------------------------------------
@@ -151,11 +157,19 @@ class Services:
         sql = "SELECT * FROM templates" + (" WHERE status=?" if status else "") + " ORDER BY updated_at DESC"
         return [self._template_row(r) for r in self.db.all(sql, (status,) if status else ())]
 
+    def _pdf(self, pdf_file: str) -> Path:
+        self.storage.ensure(f"pdfs/{pdf_file}")
+        return self.dirs["pdfs"] / pdf_file
+
     def pdf_path(self, template: dict) -> Path:
-        return self.dirs["pdfs"] / template["pdf_file"]
+        return self._pdf(template["pdf_file"])
 
     def assets_dir(self, template_id: str, revision: int) -> Path:
         return self.dirs["templates"] / template_id / f"r{revision}"
+
+    @staticmethod
+    def _assets_key(template_id: str, revision: int) -> str:
+        return f"templates/{template_id}/r{revision}"
 
     def assets_url(self, template_id: str, revision: int) -> str:
         return f"/assets/templates/{template_id}/r{revision}"
@@ -164,12 +178,13 @@ class Services:
         if not pdf_bytes.startswith(b"%PDF"):
             raise Invalid("That file is not a PDF.")
         if len(pdf_bytes) > MAX_PDF_BYTES:
-            raise Invalid("PDF is larger than 60 MB.")
+            raise Invalid("PDF is larger than 50 MB.")
         digest = hashlib.sha256(pdf_bytes).hexdigest()[:32]
         pdf_file = f"{digest}.pdf"
         pdf_path = self.dirs["pdfs"] / pdf_file
-        if not pdf_path.exists():
+        if not self.storage.ensure(f"pdfs/{pdf_file}"):
             pdf_path.write_bytes(pdf_bytes)
+        self.storage.put(f"pdfs/{pdf_file}")
         try:
             analysis = analyze_pdf(pdf_path, self.fonts)
         except AnalysisError as exc:
@@ -193,7 +208,10 @@ class Services:
         out = self.assets_dir(tid, revision)
         if out.exists():
             shutil.rmtree(out)
-        return render.build_template_assets(_render_view(definition), pdf_path, out)
+        self.storage.delete_tree(self._assets_key(tid, revision))
+        stacks = render.build_template_assets(_render_view(definition), pdf_path, out)
+        self.storage.put_tree(self._assets_key(tid, revision))
+        return stacks
 
     def update_template(self, template_id: str, patch: dict) -> dict:
         t = self.get_template(template_id)
@@ -216,11 +234,7 @@ class Services:
         if "productHandles" in patch:
             handles = sorted({slugify(h) for h in patch["productHandles"] if str(h).strip()})
             for h in handles:
-                clash = self.db.one(
-                    "SELECT templates.id AS id FROM templates, json_each(templates.product_handles) j"
-                    " WHERE j.value=? AND templates.id<>?",
-                    (h, template_id),
-                )
+                clash = self.db.template_for_handle(h, exclude=template_id)
                 if clash:
                     raise Invalid(f"Product '{h}' is already linked to template '{clash['id']}'.")
         status = t["status"]
@@ -229,10 +243,11 @@ class Services:
                 raise Invalid("status must be draft or published")
             status = patch["status"]
         revision = t["revision"] + 1
-        if rebuild or not self.assets_dir(template_id, t["revision"]).exists():
+        if rebuild or not self.storage.ensure_tree(self._assets_key(template_id, t["revision"])):
             definition["stacks"] = self._build_assets(template_id, revision, definition, self.pdf_path(t))
         else:
             shutil.copytree(self.assets_dir(template_id, t["revision"]), self.assets_dir(template_id, revision))
+            self.storage.put_tree(self._assets_key(template_id, revision))
         self.db.execute(
             "UPDATE templates SET name=?, status=?, revision=?, definition=?, product_handles=?, updated_at=? WHERE id=?",
             (name, status, revision, dumps(definition), dumps(handles), now(), template_id),
@@ -269,6 +284,7 @@ class Services:
         self.get_template(template_id)
         self.db.execute("DELETE FROM templates WHERE id=?", (template_id,))
         shutil.rmtree(self.dirs["templates"] / template_id, ignore_errors=True)
+        self.storage.delete_tree(f"templates/{template_id}")
 
     def template_for_product(self, handle: str) -> dict | None:
         """Published template linked to a Shopify product handle.
@@ -277,11 +293,7 @@ class Services:
         handle and that has no explicit links is used.
         """
         handle = slugify(handle)
-        row = self.db.one(
-            "SELECT templates.* FROM templates, json_each(templates.product_handles) j"
-            " WHERE j.value=? AND status='published'",
-            (handle,),
-        ) or self.db.one(
+        row = self.db.template_for_handle(handle, published=True) or self.db.one(
             "SELECT * FROM templates WHERE id=? AND status='published' AND product_handles='[]'",
             (handle,),
         )
@@ -333,6 +345,8 @@ class Services:
         preview.thumbnail((PREVIEW_EDGE, PREVIEW_EDGE), Image.LANCZOS)
         preview_path = self.dirs["uploads"] / f"{uid}-preview.jpg"
         preview.convert("RGB").save(preview_path, quality=85)
+        self.storage.put(f"uploads/{path.name}")
+        self.storage.put(f"uploads/{preview_path.name}")
         self.db.execute(
             "INSERT INTO uploads (id, filename, path, preview_path, width, height, created_at) VALUES (?,?,?,?,?,?,?)",
             (uid, filename[:200], path.name, preview_path.name, img.width, img.height, now()),
@@ -358,6 +372,7 @@ class Services:
             row = self.get_upload(upload_id)
         except NotFound:
             return None
+        self.storage.ensure(f"uploads/{row['path']}")
         return render.UploadRef(self.dirs["uploads"] / row["path"], row["width"], row["height"])
 
     # ------------------------------------------------------------------
@@ -441,7 +456,7 @@ class Services:
         return self.dirs["designs"] / design_id
 
     def _render(self, definition: dict, values: dict) -> bytes:
-        t_pdf = self.dirs["pdfs"] / definition["_pdf_file"]
+        t_pdf = self._pdf(definition["_pdf_file"])
         return render.render_design_pdf(
             _render_view(definition), t_pdf, values, self.upload_ref, self.fonts, self.settings.print_max_dpi
         )
@@ -478,6 +493,7 @@ class Services:
             (round(trim["x"] * k), round(trim["y"] * k), round((trim["x"] + trim["w"]) * k), round((trim["y"] + trim["h"]) * k))
         )
         thumb.save(out / "thumbnail.jpg", quality=85)
+        self.storage.put_tree(f"designs/{design_id}")
         return {"errors": [], "warnings": warnings, "pages": pages, "pdfUrl": f"/api/designs/{design_id}/proof.pdf?v={stamp}"}
 
     def approve(self, design_id: str) -> dict:
@@ -548,8 +564,8 @@ class Services:
             )
         for li, design_id in items:
             self.db.execute(
-                "INSERT OR IGNORE INTO order_items (order_id, line_item_id, design_id, title, variant, quantity)"
-                " VALUES (?,?,?,?,?,?)",
+                "INSERT INTO order_items (order_id, line_item_id, design_id, title, variant, quantity)"
+                " VALUES (?,?,?,?,?,?) ON CONFLICT (order_id, line_item_id) DO NOTHING",
                 (order_id, str(li.get("id")), design_id, li.get("title") or "", li.get("variant_title") or "", int(li.get("quantity") or 1)),
             )
         return self.get_order(order_id)
@@ -574,6 +590,7 @@ class Services:
             order_no = slugify(order["name"] or order["id"])
             filename = f"{order_no}-{item['line_item_id']}-{slugify(d['template_id'])}-qty{item['quantity']}.pdf"
             (folder / filename).write_bytes(pdf)
+            self.storage.put(f"print/{folder.name}/{filename}")
             self.db.execute(
                 "UPDATE order_items SET print_file=?, status='ready', error=NULL WHERE id=?",
                 (f"{folder.name}/{filename}", item_id),
@@ -584,19 +601,27 @@ class Services:
             self.db.execute("UPDATE order_items SET status='error', error=? WHERE id=?", (str(exc), item_id))
         return self.db.one("SELECT * FROM order_items WHERE id=?", (item_id,))  # type: ignore[return-value]
 
+    @staticmethod
+    def _order_out(order: dict, items: list[dict]) -> dict:
+        order["shipping_address"] = loads(order["shipping_address"], {})
+        order.pop("raw", None)
+        order["items"] = items
+        for item in items:
+            item["thumbnailUrl"] = f"/api/designs/{item['design_id']}/thumbnail.jpg" if item["design_id"] else None
+        return order
+
     def get_order(self, order_id: str) -> dict:
         order = self.db.one("SELECT * FROM orders WHERE id=?", (order_id,))
         if order is None:
             raise NotFound("order not found")
-        order["shipping_address"] = loads(order["shipping_address"], {})
-        order.pop("raw", None)
-        order["items"] = self.db.all("SELECT * FROM order_items WHERE order_id=? ORDER BY id", (order_id,))
-        for item in order["items"]:
-            item["thumbnailUrl"] = f"/api/designs/{item['design_id']}/thumbnail.jpg" if item["design_id"] else None
-        return order
+        return self._order_out(order, self.db.all("SELECT * FROM order_items WHERE order_id=? ORDER BY id", (order_id,)))
 
     def list_orders(self) -> list[dict]:
-        return [self.get_order(r["id"]) for r in self.db.all("SELECT id FROM orders ORDER BY created_at DESC")]
+        # Two queries however many orders there are.
+        items: dict[str, list[dict]] = {}
+        for item in self.db.all("SELECT * FROM order_items ORDER BY id"):
+            items.setdefault(item["order_id"], []).append(item)
+        return [self._order_out(o, items.get(o["id"], [])) for o in self.db.all("SELECT * FROM orders ORDER BY created_at DESC")]
 
     def set_order_status(self, order_id: str, status: str) -> dict:
         self.get_order(order_id)
