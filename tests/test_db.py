@@ -101,13 +101,13 @@ def test_a_dropped_connection_is_replaced(svc, template):
 @pytest.mark.skipif(not TEST_DATABASE_URL, reason="Postgres only")
 def test_every_table_in_the_schema_is_closed_to_everyone_but_its_owner(svc):
     """Not only the tables on the list: a table added to the schema without being listed would fail here."""
-    from app.db import TABLES, VERSION_TABLE
+    from app.db import INTERNAL_TABLES, TABLES
 
     rows = svc.db.all(
         "SELECT c.relname AS t, c.relrowsecurity AS rls FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace"
         " WHERE n.nspname=current_schema() AND c.relkind='r'"
     )
-    assert {r["t"] for r in rows} == {*TABLES, VERSION_TABLE}
+    assert {r["t"] for r in rows} == {*TABLES, *INTERNAL_TABLES}
     assert all(r["rls"] for r in rows)
 
 
@@ -133,8 +133,10 @@ def test_there_is_one_list_of_tables(svc):
     assert set(copy_data.TABLES) == set(TABLES) - {"admins"}
     listed = "sqlite_master WHERE type='table'" if not TEST_DATABASE_URL else "information_schema.tables WHERE table_schema=current_schema()"
     name = "name" if not TEST_DATABASE_URL else "table_name"
-    found = {r["n"] for r in svc.db.all(f"SELECT {name} AS n FROM {listed}")} - {"sqlite_sequence", "schema_version"}
-    assert found == set(TABLES)
+    from app.db import INTERNAL_TABLES
+
+    found = {r["n"] for r in svc.db.all(f"SELECT {name} AS n FROM {listed}")} - {"sqlite_sequence"}
+    assert found == {*TABLES, *INTERNAL_TABLES}  # what is backed up, and the app's own machinery
 
 
 def open_db(tmp_path, url, migrations=None):

@@ -12,9 +12,8 @@ import json
 import logging
 import re
 import secrets
-import threading
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -28,6 +27,7 @@ from .auth import COOKIE, MIN_PASSWORD, SESSION_SECONDS, AccountError, AdminAuth
 from .backup import Backups, Scheduler
 from .config import ROOT, Settings, describe, load_settings
 from .fonts import FontError
+from .jobs import Jobs
 from .services import Invalid, NotFound, Services
 from .storage import Missing, Storage, StorageError
 
@@ -285,28 +285,24 @@ def create_app(
     # ------------------------------------------------------------------
     # Shopify webhook
     # ------------------------------------------------------------------
-    def process_order(order_id: str) -> None:
-        svc.generate_print_files(order_id)
-        order = svc.get_order(order_id)
-        if order["items"] and all(i["status"] == "ready" for i in order["items"]):
-            shop_admin.add_order_tags(order_id, ["jasmin-print-ready"])
+    def print_order(payload: dict) -> None:
+        """The "print" job: make an order's print files, then tell Shopify they are ready."""
+        order = svc.make_print_files(payload["order_id"])
+        if order["items"]:
+            shop_admin.add_order_tags(order["id"], ["jasmin-print-ready"])
 
-    app.state.process_order = process_order
-
-    def resume_print_work() -> None:
-        """Print files that were being made when the app last stopped are made now."""
-        try:
-            for order_id in svc.pending_orders():
-                log.info("resuming print files for order %s", order_id)
-                process_order(order_id)
-        except Exception:  # the app must come up regardless; the items stay visible as pending
-            log.exception("could not resume unfinished print files")
-
-    if settings.resume_print_work:
-        threading.Thread(target=resume_print_work, name="jasmin-resume-print", daemon=True).start()
+    jobs = Jobs(svc.db, {"print": print_order}, inline=settings.jobs_inline)
+    app.state.jobs = jobs
+    if not jobs.inline:
+        # What the last run left unfinished: jobs that were running when it stopped, and
+        # orders from before jobs existed whose print files were never made.
+        jobs.recover()
+        for order_id in svc.pending_orders():
+            jobs.enqueue("print", f"print:{order_id}", {"order_id": order_id})
+        jobs.start()
 
     @app.post("/webhooks/shopify/orders-create")
-    async def orders_create(request: Request, background: BackgroundTasks):
+    async def orders_create(request: Request):
         body = await request.body()
         if not shopify.verify_webhook(body, request.headers.get("X-Shopify-Hmac-Sha256"), settings.webhook_secrets):
             return JSONResponse({"detail": "invalid signature"}, status_code=401)
@@ -320,8 +316,8 @@ def create_app(
         source = "demo" if request.headers.get("X-Jasmin-Demo") == "1" else "shopify"
         order = await run_in_threadpool(svc.record_order, payload, source=source, shop=shop)
         if order is not None:
-            background.add_task(process_order, order["id"])
-        # Shopify only needs a fast 2xx; processing continues in the background.
+            # Shopify only needs a fast 2xx; the print files are a job (it survives a restart).
+            await run_in_threadpool(jobs.enqueue, "print", f"print:{order['id']}", {"order_id": order["id"]})
         return {"ok": True, "personalized": order is not None}
 
     # ------------------------------------------------------------------

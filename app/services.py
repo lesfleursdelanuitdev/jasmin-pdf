@@ -135,6 +135,8 @@ class Services:
         # Every file goes through this: it hands out the paths (see app/storage.py).
         self.storage = storage or open_storage(settings)
         self._upload_lock = threading.Lock()
+        # At most two PDFs are rendered at a time: each needs memory, and the container has a ceiling.
+        self._render_slots = threading.BoundedSemaphore(2)
         if self.storage.remote:
             self.storage.ensure_bucket()
             self.storage.sync_down("fonts")
@@ -492,7 +494,8 @@ class Services:
         errors, warnings = render.validate_values(_render_view(definition), d["values"], self.upload_ref, self.fonts)
         if errors:
             return {"errors": errors, "warnings": warnings, "pages": []}
-        pdf = self._render(definition, d["values"])
+        with self._render_slots:
+            pdf = self._render(definition, d["values"])
         stamp = secrets.token_hex(4)
         pages = []
         # Every file of a proof is written again each time, so nothing has to be cleared first.
@@ -508,14 +511,27 @@ class Services:
                 (round(trim["x"] * k), round(trim["y"] * k), round((trim["x"] + trim["w"]) * k), round((trim["y"] + trim["h"]) * k))
             )
             thumb.save(out / "thumbnail.jpg", quality=85)
+        # What this proof shows is remembered, so that approving it does not have to render it again.
+        self.db.execute(
+            "UPDATE designs SET proof_hash=?, warnings=? WHERE id=? AND status='draft'",
+            (self._proof_hash(definition, d["values"]), dumps(warnings), design_id),
+        )
         return {"errors": [], "warnings": warnings, "pages": pages, "pdfUrl": f"/api/designs/{design_id}/proof.pdf?v={stamp}"}
+
+    @staticmethod
+    def _proof_hash(definition: dict, values: dict) -> str:
+        return hashlib.sha256(f"{dumps(values)}|{dumps(definition)}".encode()).hexdigest()
 
     def approve(self, design_id: str) -> dict:
         d = self.get_design(design_id)
         if d["status"] != "draft":
             return self.design_public(d)
         definition = self._definition_with_pdf(d)
-        result = self.proof(design_id)
+        if d.get("proof_hash") == self._proof_hash(definition, d["values"]) and self.storage.has(f"designs/{design_id}/proof.pdf"):
+            # The proof the customer has just looked at is of exactly this: it is the one that is approved.
+            result = {"errors": [], "warnings": d["warnings"]}
+        else:
+            result = self.proof(design_id)
         if result["errors"]:
             raise Invalid("Please fix the highlighted fields.", result["errors"])
         summary = self._summary(definition, d["values"])
@@ -606,7 +622,8 @@ class Services:
             if d["status"] == "draft":
                 raise Invalid("design was never approved by the customer")
             definition = self._definition_with_pdf(d)
-            pdf = self._render(definition, d["values"])
+            with self._render_slots:
+                pdf = self._render(definition, d["values"])
             order_no = slugify(order["name"] or order["id"])
             filename = f"{order_no}-{slugify(str(item['line_item_id']))}-{slugify(d['template_id'])}-qty{item['quantity']}.pdf"
             print_file = f"{slugify(order['id'])}/{filename}"
@@ -675,6 +692,15 @@ class Services:
         info = self.fonts.add_upload(filename, data)
         self.storage.put(f"fonts/{info.path.name}")
         return info.public()
+
+    def make_print_files(self, order_id: str) -> dict:
+        """Make the print files an order still lacks. Raises when one could not be made, so that the job is tried again."""
+        self.generate_print_files(order_id)
+        order = self.get_order(order_id)
+        failed = [i for i in order["items"] if i["status"] != "ready"]
+        if failed:
+            raise RuntimeError(f"{len(failed)} print file(s) of order {order['name']} could not be made: {failed[0].get('error') or 'unknown error'}")
+        return order
 
     def pending_orders(self) -> list[str]:
         """Orders with an item whose print file was never made (the app stopped while it was being rendered)."""

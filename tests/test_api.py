@@ -273,16 +273,17 @@ def test_print_files_left_pending_are_made_when_the_app_starts(client, svc, temp
     design = approved_design(client)
     svc.record_order(order_payload(design["id"]), source="demo")
     assert svc.pending_orders() == [str(order_payload(design["id"])["id"])]
-    settings.resume_print_work = True
+    settings.jobs_inline = False  # as a real run: a worker, started with the app
     again = create_app(settings)
     try:
-        for _ in range(100):
+        for _ in range(150):
             if not svc.pending_orders():
                 break
             time.sleep(0.1)
         item = svc.db.one("SELECT * FROM order_items")
         assert item["status"] == "ready" and item["print_file"]
     finally:
+        again.state.jobs.stop()
         again.state.services.db.close()
 
 
