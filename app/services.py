@@ -457,10 +457,13 @@ class Services:
             raise Invalid("This design has already been approved and can no longer be changed.")
         t = self.get_template(d["template_id"])
         clean = self._clean_values(t["definition"], values)
-        self.db.execute(
-            'UPDATE designs SET "values"=?, template_revision=?, updated_at=? WHERE id=?',
+        # Only while it is still a draft: an approval that landed in between is not written over.
+        changed = self.db.execute(
+            'UPDATE designs SET "values"=?, template_revision=?, updated_at=? WHERE id=? AND status=\'draft\'',
             (dumps(clean), t["revision"], now(), design_id),
         )
+        if not changed:
+            raise Invalid("This design has already been approved and can no longer be changed.")
         return self.get_design(design_id)
 
     def design_public(self, d: dict) -> dict:
@@ -531,11 +534,17 @@ class Services:
             raise Invalid("Please fix the highlighted fields.", result["errors"])
         summary = self._summary(definition, d["values"])
         ts = now()
-        self.db.execute(
-            "UPDATE designs SET status='approved', snapshot=?, summary=?, warnings=?, approved_at=?, updated_at=? WHERE id=?",
-            (dumps(definition), summary, dumps(result["warnings"]), ts, ts, design_id),
+        # Approved only if it is still the draft the proof was made from: an edit that arrived
+        # while the proof was rendering must not end up approved unseen.
+        approved = self.db.execute(
+            "UPDATE designs SET status='approved', snapshot=?, summary=?, warnings=?, approved_at=?, updated_at=?"
+            ' WHERE id=? AND status=\'draft\' AND "values"=?',
+            (dumps(definition), summary, dumps(result["warnings"]), ts, ts, design_id, dumps(d["values"])),
         )
-        return self.design_public(self.get_design(design_id))
+        after = self.get_design(design_id)
+        if not approved and after["status"] == "draft":
+            raise Invalid("Your design changed while the proof was being made. Please check the proof again and approve it.")
+        return self.design_public(after)
 
     @staticmethod
     def _summary(definition: dict, values: dict) -> str:
@@ -569,30 +578,32 @@ class Services:
         customer = payload.get("customer") or {}
         address = payload.get("shipping_address") or {}
         name = " ".join(filter(None, [customer.get("first_name"), customer.get("last_name")])) or address.get("name") or ""
-        if not self.db.one("SELECT id FROM orders WHERE id=?", (order_id,)):
-            self.db.execute(
-                "INSERT INTO orders (id, name, email, customer, shop, source, status, total, currency, shipping_address, created_at, raw)"
-                " VALUES (?,?,?,?,?,?, 'received', ?,?,?,?,?)",
-                (
-                    order_id,
-                    payload.get("name") or f"#{order_id}",
-                    payload.get("email") or payload.get("contact_email") or "",
-                    name,
-                    shop,
-                    source,
-                    str(payload.get("total_price") or ""),
-                    payload.get("currency") or "",
-                    dumps(address),
-                    payload.get("created_at") or now(),
-                    dumps(payload),
-                ),
-            )
-        for li, design_id in items:
-            self.db.execute(
-                "INSERT INTO order_items (order_id, line_item_id, design_id, title, variant, quantity)"
-                " VALUES (?,?,?,?,?,?) ON CONFLICT (order_id, line_item_id) DO NOTHING",
-                (order_id, str(li.get("id")), design_id, li.get("title") or "", li.get("variant_title") or "", int(li.get("quantity") or 1)),
-            )
+        # The order and its items are stored together: never an order without its personalised items.
+        with self.db.transaction():
+            if not self.db.one("SELECT id FROM orders WHERE id=?", (order_id,)):
+                self.db.execute(
+                    "INSERT INTO orders (id, name, email, customer, shop, source, status, total, currency, shipping_address, created_at, raw)"
+                    " VALUES (?,?,?,?,?,?, 'received', ?,?,?,?,?)",
+                    (
+                        order_id,
+                        payload.get("name") or f"#{order_id}",
+                        payload.get("email") or payload.get("contact_email") or "",
+                        name,
+                        shop,
+                        source,
+                        str(payload.get("total_price") or ""),
+                        payload.get("currency") or "",
+                        dumps(address),
+                        payload.get("created_at") or now(),
+                        dumps(payload),
+                    ),
+                )
+            for li, design_id in items:
+                self.db.execute(
+                    "INSERT INTO order_items (order_id, line_item_id, design_id, title, variant, quantity)"
+                    " VALUES (?,?,?,?,?,?) ON CONFLICT (order_id, line_item_id) DO NOTHING",
+                    (order_id, str(li.get("id")), design_id, li.get("title") or "", li.get("variant_title") or "", int(li.get("quantity") or 1)),
+                )
         return self.get_order(order_id)
 
     def generate_print_files(self, order_id: str) -> None:

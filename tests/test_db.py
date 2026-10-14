@@ -99,12 +99,16 @@ def test_a_dropped_connection_is_replaced(svc, template):
 
 
 @pytest.mark.skipif(not TEST_DATABASE_URL, reason="Postgres only")
-def test_tables_are_closed_to_everyone_but_their_owner(svc):
+def test_every_table_in_the_schema_is_closed_to_everyone_but_its_owner(svc):
+    """Not only the tables on the list: a table added to the schema without being listed would fail here."""
+    from app.db import TABLES, VERSION_TABLE
+
     rows = svc.db.all(
         "SELECT c.relname AS t, c.relrowsecurity AS rls FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace"
         " WHERE n.nspname=current_schema() AND c.relkind='r'"
     )
-    assert len(rows) == 6 and all(r["rls"] for r in rows)
+    assert {r["t"] for r in rows} == {*TABLES, VERSION_TABLE}
+    assert all(r["rls"] for r in rows)
 
 
 def test_orders_are_listed_newest_first_with_their_items(svc, template):
@@ -117,3 +121,142 @@ def test_orders_are_listed_newest_first_with_their_items(svc, template):
     assert [o["id"] for o in orders] == ["o2", "o1"]
     assert [o["items"][0]["line_item_id"] for o in orders] == ["l2", "l1"] and "raw" not in orders[0]
     assert orders[0]["items"][0]["thumbnailUrl"] == "/api/designs/dsn_2/thumbnail.jpg"
+
+
+# -- one table list, migrations, row counts, transactions ------------------------
+def test_there_is_one_list_of_tables(svc):
+    import app.backup as backup
+    import scripts.copy_data as copy_data
+    from app.db import TABLES
+
+    assert backup.TABLES is TABLES
+    assert set(copy_data.TABLES) == set(TABLES) - {"admins"}
+    listed = "sqlite_master WHERE type='table'" if not TEST_DATABASE_URL else "information_schema.tables WHERE table_schema=current_schema()"
+    name = "name" if not TEST_DATABASE_URL else "table_name"
+    found = {r["n"] for r in svc.db.all(f"SELECT {name} AS n FROM {listed}")} - {"sqlite_sequence", "schema_version"}
+    assert found == set(TABLES)
+
+
+def open_db(tmp_path, url, migrations=None):
+    from app.db import open_database
+
+    return open_database(tmp_path / "m.db", url, "", migrations)
+
+
+def test_a_new_database_is_brought_to_the_newest_version(tmp_path, database_url_2):
+    from app.db import MIGRATIONS
+
+    db = open_db(tmp_path, database_url_2)
+    try:
+        assert db.version == MIGRATIONS[-1][0] == db.one("SELECT version FROM schema_version")["version"]
+        assert db.one("SELECT COUNT(*) AS n FROM schema_version")["n"] == 1
+    finally:
+        db.close()
+
+
+def test_a_migration_runs_once_and_keeps_the_data(tmp_path, database_url_2):
+    from app.db import MIGRATIONS
+
+    db = open_db(tmp_path, database_url_2)
+    db.execute("INSERT INTO admins (email, added_by, created_at) VALUES (?,?,?)", ("a@example.com", "", "2026-01-01"))
+    db.close()
+    more = [*MIGRATIONS, (MIGRATIONS[-1][0] + 1, "ALTER TABLE admins ADD COLUMN note TEXT NOT NULL DEFAULT 'none'")]
+    for _ in range(2):  # the second start must not try to add the column again
+        db = open_db(tmp_path, database_url_2, more)
+        assert db.version == more[-1][0]
+        assert db.one("SELECT email, note FROM admins") == {"email": "a@example.com", "note": "none"}
+        db.close()
+
+
+def test_a_database_from_before_migrations_is_taken_over_as_it_is(tmp_path, database_url_2):
+    """The live database has the tables but no version table: nothing is lost, and it gets a version."""
+    db = open_db(tmp_path, database_url_2)
+    db.execute("INSERT INTO admins (email, added_by, created_at) VALUES (?,?,?)", ("a@example.com", "", "2026-01-01"))
+    db.execute("DROP TABLE schema_version")
+    db.close()
+    db = open_db(tmp_path, database_url_2)
+    try:
+        assert db.version >= 1 and db.one("SELECT COUNT(*) AS n FROM admins")["n"] == 1
+    finally:
+        db.close()
+
+
+def test_a_migration_that_fails_changes_nothing(tmp_path, database_url_2):
+    from app.db import MIGRATIONS
+
+    open_db(tmp_path, database_url_2).close()
+    bad = [*MIGRATIONS, (MIGRATIONS[-1][0] + 1, "ALTER TABLE admins ADD COLUMN note TEXT; ALTER TABLE no_such_table ADD COLUMN x TEXT")]
+    with pytest.raises(Exception):
+        open_db(tmp_path, database_url_2, bad)
+    db = open_db(tmp_path, database_url_2)
+    try:
+        assert db.version == MIGRATIONS[-1][0]
+        if TEST_DATABASE_URL:  # Postgres takes the half-done change back too; SQLite cannot undo an ALTER TABLE
+            assert "note" not in db.one("SELECT * FROM admins LIMIT 1") if db.one("SELECT * FROM admins LIMIT 1") else True
+    finally:
+        db.close()
+
+
+def test_execute_says_how_many_rows_changed(svc, template):
+    assert svc.db.execute("UPDATE templates SET name=? WHERE id=?", ("X", template["id"])) == 1
+    assert svc.db.execute("UPDATE templates SET name=? WHERE id=?", ("X", "nope")) == 0
+    assert svc.db.execute("DELETE FROM templates WHERE id=?", ("nope",)) == 0
+
+
+def test_a_transaction_is_all_or_nothing(svc):
+    db = svc.db
+    add = lambda email: db.execute("INSERT INTO admins (email, added_by, created_at) VALUES (?,?,?)", (email, "", "2026-01-01"))
+    with db.transaction():
+        add("one@example.com")
+        add("two@example.com")
+        assert db.one("SELECT COUNT(*) AS n FROM admins")["n"] == 2  # seen inside it
+    assert db.one("SELECT COUNT(*) AS n FROM admins")["n"] == 2
+    with pytest.raises(RuntimeError):
+        with db.transaction():
+            add("three@example.com")
+            with db.transaction():  # one inside another is part of it
+                add("four@example.com")
+            raise RuntimeError("stop")
+    assert db.one("SELECT COUNT(*) AS n FROM admins")["n"] == 2
+    assert add("five@example.com") == 1 and db.one("SELECT COUNT(*) AS n FROM admins")["n"] == 3  # back to committing each statement
+
+
+def test_an_order_is_stored_with_its_items_or_not_at_all(svc, template, monkeypatch):
+    payload = {"id": "o1", "name": "#1", "line_items": [{"id": "l1", "title": "t", "quantity": "not a number", "properties": [{"name": "_design_id", "value": "dsn_1"}]}]}
+    with pytest.raises(ValueError):
+        svc.record_order(payload, source="demo")
+    assert svc.db.one("SELECT COUNT(*) AS n FROM orders")["n"] == 0
+    payload["line_items"][0]["quantity"] = 2
+    assert svc.record_order(payload, source="demo")["items"][0]["quantity"] == 2
+
+
+def test_an_edit_that_arrives_during_approval_is_not_approved_unseen(client, svc, template, monkeypatch):
+    from .test_api import upload
+
+    photo = upload(client)
+    d = client.post("/api/designs", json={"templateId": "wedding-invitation", "values": {"couple-photo": {"upload": photo["id"]}, "couple-names": {"text": "Sofia & Mateo"}}}).json()
+    real_proof = svc.proof
+
+    def proof_with_an_edit_in_the_middle(design_id):
+        result = real_proof(design_id)
+        svc.update_design(design_id, {"couple-photo": {"upload": photo["id"]}, "couple-names": {"text": "Sofia & Matteo"}})
+        return result
+
+    monkeypatch.setattr(svc, "proof", proof_with_an_edit_in_the_middle)
+    r = client.post(f"/api/designs/{d['id']}/approve")
+    assert r.status_code == 422 and "changed while the proof was being made" in r.json()["detail"]
+    assert svc.get_design(d["id"])["status"] == "draft"
+    # Approved again without an edit in the middle, it goes through with the newer wording.
+    monkeypatch.setattr(svc, "proof", real_proof)
+    assert client.post(f"/api/designs/{d['id']}/approve").json()["status"] == "approved"
+    assert "Matteo" in svc.get_design(d["id"])["summary"]
+
+
+def test_an_approved_design_cannot_be_changed_even_by_a_late_save(client, svc, template):
+    from .test_api import approved_design
+
+    d = approved_design(client)
+    assert client.put(f"/api/designs/{d['id']}", json={"values": {"couple-names": {"text": "Late"}}}).status_code == 422
+    # Straight at the statement, as a save that read "draft" a moment before the approval would:
+    assert svc.db.execute('UPDATE designs SET "values"=? WHERE id=? AND status=\'draft\'', ("{}", d["id"])) == 0
+    assert "Sofia" in svc.get_design(d["id"])["summary"]

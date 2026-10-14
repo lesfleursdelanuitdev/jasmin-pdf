@@ -18,17 +18,12 @@ from pathlib import Path
 from typing import Callable
 
 from app.config import load_settings
-from app.db import PostgresDatabase, open_database
+from app.db import TABLES as ALL_TABLES
+from app.db import open_database
 from app.storage import SupabaseStorage
 
-# Parents before children; each with the column(s) that identify a row.
-TABLES = {
-    "templates": ("id",),
-    "uploads": ("id",),
-    "designs": ("id",),
-    "orders": ("id",),
-    "order_items": ("order_id", "line_item_id"),
-}
+# The tables the old site had: this script copies a data directory from before admins existed.
+TABLES = {t: key for t, key in ALL_TABLES.items() if t != "admins"}
 FOLDERS = ("pdfs", "templates", "uploads", "designs", "print", "fonts")
 
 
@@ -90,9 +85,7 @@ def copy_data(source: Path, db, storage, log: Callable[[str], None] = print, dry
         after = db.one(f"SELECT COUNT(*) AS n FROM {table}")["n"]
         report["tables"][table] = {"source": len(rows[table]), "added": after - before, "already_there": len(rows[table]) - (after - before), "total": after}
         log(f"  {table}: {len(rows[table])} in the source, {after - before} added, {len(rows[table]) - (after - before)} already there")
-    if isinstance(db, PostgresDatabase):
-        # Copied order items kept their ids; new ones must be numbered after them.
-        db.execute("SELECT setval(pg_get_serial_sequence('order_items', 'id'), GREATEST((SELECT MAX(id) FROM order_items), 1))")
+    db.reset_identity()  # copied order items kept their ids
 
     # Every source row must now be in the destination.
     absent = []

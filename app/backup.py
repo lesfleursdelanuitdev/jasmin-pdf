@@ -24,21 +24,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
-from .db import PostgresDatabase
+from .db import TABLES
 from .storage import FOLDERS
 
 log = logging.getLogger("jasmin")
 
 FORMAT = 1
-# Parents before children; each with the column(s) that identify a row.
-TABLES = {
-    "templates": ("id",),
-    "uploads": ("id",),
-    "designs": ("id",),
-    "orders": ("id",),
-    "order_items": ("order_id", "line_item_id"),
-    "admins": ("email",),
-}
 NAME = re.compile(r"jasmin-backup-(\d{8}T\d{6}Z)\.zip")
 STAMP = "%Y%m%dT%H%M%SZ"
 # An automatic backup is due when the newest one is older than this.
@@ -102,7 +93,7 @@ class Backups:
 
     def _write(self, part: Path, created: datetime, kind: str) -> dict:
         db, storage = self.svc.db, self.svc.storage
-        manifest: dict = {"format": FORMAT, "created": created.isoformat(), "kind": kind, "tables": {}, "files": {}, "bytes": 0}
+        manifest: dict = {"format": FORMAT, "schema": db.version, "created": created.isoformat(), "kind": kind, "tables": {}, "files": {}, "bytes": 0}
         with zipfile.ZipFile(part, "w", zipfile.ZIP_DEFLATED) as z, tempfile.TemporaryDirectory(dir=self.dir, prefix=".spool-") as spool:
             for table in TABLES:
                 rows = db.all(f"SELECT * FROM {table}")
@@ -296,8 +287,6 @@ def restore(zip_path: Path, db, storage, log: Callable[[str], None] = print, dry
             added = db.one(f"SELECT COUNT(*) AS n FROM {table}")["n"] - before
             report["tables"][table] = {"backup": len(rows[table]), "added": added, "already_there": len(rows[table]) - added}
             log(f"  {table}: {len(rows[table])} in the backup, {added} added, {len(rows[table]) - added} already there")
-        if isinstance(db, PostgresDatabase):
-            # Restored order items kept their ids; new ones must be numbered after them.
-            db.execute("SELECT setval(pg_get_serial_sequence('order_items', 'id'), GREATEST((SELECT MAX(id) FROM order_items), 1))")
+        db.reset_identity()  # restored order items kept their ids
         log("restore complete")
         return report
