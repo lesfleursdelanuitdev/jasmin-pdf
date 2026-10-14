@@ -172,8 +172,14 @@ class Services:
     def _assets_key(template_id: str, revision: int) -> str:
         return f"templates/{template_id}/r{revision}"
 
-    def assets_url(self, template_id: str, revision: int) -> str:
-        return f"/assets/templates/{template_id}/r{revision}"
+    @staticmethod
+    def assets_revision(t: dict) -> int:
+        """The revision whose images the template shows. They are made anew only when an element is
+        switched on or off, so most saves keep the ones they had (and browsers keep their copies)."""
+        return int(t["definition"].get("assetsRevision") or t["revision"])
+
+    def assets_url(self, t: dict) -> str:
+        return f"/assets/templates/{t['id']}/r{self.assets_revision(t)}"
 
     def create_template(self, name: str, pdf_bytes: bytes, template_id: str | None = None) -> dict:
         if not pdf_bytes.startswith(b"%PDF"):
@@ -242,10 +248,13 @@ class Services:
             if absent:
                 raise Invalid(f"This template uses fonts that are not in the studio: {', '.join(absent)}. Upload them under Fonts before publishing.")
         revision = t["revision"] + 1
-        # The new revision gets the previous one's images, unless an element was switched on or
-        # off (then they are built again) or the previous ones are not stored any more.
-        if rebuild or not self.storage.copy_tree(self._assets_key(template_id, t["revision"]), self._assets_key(template_id, revision)):
+        # The images stay the ones the template has, unless an element was switched on or off
+        # (then they are made anew) or they are not stored any more.
+        current = self.assets_revision(t)
+        if rebuild or not self.storage.has(f"{self._assets_key(template_id, current)}/p0-original.jpg"):
             definition["stacks"] = self._build_assets(template_id, revision, definition, self.pdf_path(t))
+            current = revision
+        definition["assetsRevision"] = current
         self.db.execute(
             "UPDATE templates SET name=?, status=?, revision=?, definition=?, product_handles=?, updated_at=? WHERE id=?",
             (name, status, revision, dumps(definition), dumps(handles), now(), template_id),
@@ -305,7 +314,7 @@ class Services:
             "name": t["name"],
             "status": t["status"],
             "revision": t["revision"],
-            "assets": self.assets_url(t["id"], t["revision"]),
+            "assets": self.assets_url(t),
             "pages": definition["pages"],
             "stacks": definition["stacks"],
             "elements": elements,

@@ -64,7 +64,7 @@ def router(studio: Studio) -> APIRouter:
             "productHandles": t["product_handles"],
             "createdAt": t["created_at"],
             "updatedAt": t["updated_at"],
-            "assets": svc.assets_url(t["id"], t["revision"]),
+            "assets": svc.assets_url(t),
             "definition": t["definition"],
             "editorUrl": f"/editor/{t['id']}",
         }

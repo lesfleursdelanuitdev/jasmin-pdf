@@ -261,8 +261,8 @@ def test_app_serves_everything_again_after_the_data_directory_is_emptied(setting
         assert fake.keys() == on_disk
         tops = {k.split("/")[0] for k in on_disk}
         assert tops == {"pdfs", "templates", "uploads", "designs", "print", "fonts"}
-        r1, r2 = f"templates/{template['id']}/r1/", f"templates/{template['id']}/r2/"
-        assert [k[len(r1):] for k in on_disk if k.startswith(r1)] == [k[len(r2):] for k in on_disk if k.startswith(r2)]
+        # One set of template images: the saves so far kept the one the template was made with.
+        assert {k.split("/")[2] for k in on_disk if k.startswith("templates/")} == {"r1"}
     finally:
         svc.db.close()
         svc.storage.close()
@@ -289,11 +289,11 @@ def test_app_serves_everything_again_after_the_data_directory_is_emptied(setting
         assert client.get("/assets/uploads/img_nope-preview.jpg").status_code == 404
         assert client.get(f"/api/designs/{design_id}/proof-p9.jpg").status_code == 404
 
-        # Work goes on from the bucket: a new revision copies the old assets, a new proof needs the PDF and the photo.
+        # Work goes on from the bucket: a save keeps the images it has, a new proof needs the PDF and the photo.
+        stored = fake.keys()
         updated = admin.patch("/admin/api/templates/wedding-invitation", json={"name": "Renamed"})
         assert updated.status_code == 200, updated.text
-        r3 = f"templates/{template['id']}/r{updated.json()['revision']}/"
-        assert [k[len(r3):] for k in fake.keys() if k.startswith(r3)] == [k[len(r2):] for k in fake.keys() if k.startswith(r2)]
+        assert updated.json()["assets"] == payload["assets"] and fake.keys() == stored
         second = approved_design(client)
         assert client.get(f"/api/designs/{second['id']}/proof.pdf").content.startswith(b"%PDF")
         regenerated = admin.post(f"/admin/api/order-items/{item['id']}/regenerate").json()

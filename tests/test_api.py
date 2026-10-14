@@ -250,9 +250,32 @@ def test_a_failed_template_save_does_not_block_the_next_one(svc, template):
     stale = svc.assets_dir(template["id"], template["revision"] + 1)
     stale.mkdir(parents=True)
     (stale / "leftover.txt").write_text("from a save that failed")
-    t = svc.update_template(template["id"], {"name": "Renamed"})
-    assert t["name"] == "Renamed" and t["revision"] == template["revision"] + 1
+    t = svc.update_template(template["id"], {"elements": [{"id": "venue", "enabled": False}]})  # makes the images anew
+    assert t["revision"] == template["revision"] + 1 and svc.assets_revision(t) == t["revision"]
     assert not (stale / "leftover.txt").exists() and (stale / "p0-original.jpg").exists()
+
+
+def test_a_save_keeps_the_images_unless_an_element_is_switched_on_or_off(svc, template, admin):
+    first = svc.assets_url(template)
+    made = []
+    real = svc._build_assets
+    svc._build_assets = lambda *a, **k: made.append(1) or real(*a, **k)
+
+    t = svc.update_template(template["id"], {"name": "Renamed", "elements": [{"id": "couple-names", "fontSize": 40}]})
+    assert t["revision"] == template["revision"] + 1 and svc.assets_url(t) == first and made == []
+    assert not svc.assets_dir(template["id"], t["revision"]).exists()  # nothing was copied
+    assert admin.get("/admin/api/templates/wedding-invitation").json()["assets"] == first
+    assert svc.editor_payload(t)["assets"] == first
+
+    t2 = svc.update_template(template["id"], {"elements": [{"id": "venue", "enabled": False}]})
+    assert made == [1] and svc.assets_url(t2) == f"/assets/templates/{template['id']}/r{t2['revision']}"
+    t3 = svc.update_template(template["id"], {"name": "Again"})
+    assert made == [1] and svc.assets_url(t3) == svc.assets_url(t2)
+
+    # The images are gone from everywhere: the next save makes them again.
+    svc.storage.remove_tree(f"templates/{template['id']}")
+    t4 = svc.update_template(template["id"], {"name": "Once more"})
+    assert made == [1, 1] and svc.assets_revision(t4) == t4["revision"] and (svc.assets_dir(template["id"], t4["revision"]) / "p0-original.jpg").exists()
 
 
 def test_a_print_file_that_cannot_be_made_says_so_whatever_went_wrong(client, svc, template, monkeypatch):

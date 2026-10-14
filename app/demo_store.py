@@ -51,7 +51,7 @@ def register(app: FastAPI, svc: Services, settings: Settings) -> None:
                     "handle": handle,
                     "title": t["name"],
                     "images": [
-                        f"{svc.assets_url(t['id'], t['revision'])}/p{p['index']}-original.jpg"
+                        f"{svc.assets_url(t)}/p{p['index']}-original.jpg"
                         for p in t["definition"]["pages"]
                     ],
                     "variants": [
