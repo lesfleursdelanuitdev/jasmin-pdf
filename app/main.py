@@ -31,8 +31,30 @@ from .storage import Missing, Storage, StorageError
 log = logging.getLogger("jasmin")
 
 
-class TemplateAssets(StaticFiles):
-    """/assets/templates from the data directory, fetching a file from storage first if it is not there."""
+class Static(StaticFiles):
+    """Files that say how long a browser may keep them."""
+
+    cache = "no-cache"
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        if response.status_code in (200, 304):
+            response.headers["Cache-Control"] = self.cache
+        return response
+
+
+class AppFiles(Static):
+    """/static: the app's own pages, scripts and styles. Their addresses stay the same from one
+    version to the next, so a browser asks each time whether its copy is still the current one
+    (a short answer when it is) and never runs an old script against a new page."""
+
+
+class TemplateAssets(Static):
+    """/assets/templates from the data directory, fetching a file from storage first if it is not there.
+
+    A template's images live under their revision and are never changed in place, so a browser may keep them."""
+
+    cache = "public, max-age=31536000, immutable"
 
     def __init__(self, *, directory, storage: Storage):
         super().__init__(directory=directory)
@@ -130,7 +152,7 @@ def create_app(
     app.state.jobs = jobs
     app.add_middleware(GZipMiddleware, minimum_size=2048)
     error_handlers(app)
-    app.mount("/static", StaticFiles(directory=STATIC), name="static")
+    app.mount("/static", AppFiles(directory=STATIC), name="static")
     app.mount("/assets/templates", TemplateAssets(directory=svc.storage.folder("templates"), storage=svc.storage), name="template-assets")
     for part in (pages, public, webhooks, admin):
         app.include_router(part.router(studio))

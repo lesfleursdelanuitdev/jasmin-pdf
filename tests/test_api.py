@@ -321,3 +321,14 @@ def test_the_demo_store_does_not_show_a_real_order(client, svc, template):
 def test_admin_pages_refuse_to_be_framed(admin, client):
     assert admin.get("/admin").headers["content-security-policy"] == "frame-ancestors 'none'"
     assert "frame-ancestors 'self'" in client.get("/editor/wedding-invitation").headers["content-security-policy"]
+
+
+def test_browsers_keep_template_images_and_always_check_the_apps_own_files(client, template):
+    payload = client.get("/api/templates/wedding-invitation").json()
+    image = client.get(f"{payload['assets']}/p0-original.jpg")
+    assert image.status_code == 200 and image.headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert "cache-control" not in client.get(f"{payload['assets']}/nope.png").headers
+    script = client.get("/static/js/editor.js")
+    assert script.headers["cache-control"] == "no-cache"
+    again = client.get("/static/js/editor.js", headers={"If-None-Match": script.headers["etag"]})
+    assert again.status_code == 304 and again.headers["cache-control"] == "no-cache"
