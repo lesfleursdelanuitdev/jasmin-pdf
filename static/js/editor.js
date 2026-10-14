@@ -5,6 +5,7 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 const params = new URLSearchParams(location.search);
 const templateId = decodeURIComponent(location.pathname.split("/").filter(Boolean).pop() || "");
 const embedded = params.get("embed") === "1" && window.parent !== window;
+const TOUCH = window.matchMedia("(pointer: coarse)").matches;
 const parentOrigin = params.get("origin") || (document.referrer ? new URL(document.referrer).origin : "");
 const storageKey = `jasmin:design:${templateId}`;
 
@@ -593,7 +594,7 @@ function imageField(el) {
     h("div", { class: "quality", "data-quality": "" }),
     h("p", {
       class: "field-help",
-      text: el.help || "Drag the photo on the design to reposition it; scroll or pinch to zoom.",
+      text: el.help || (TOUCH ? "Drag the photo on the design to move it; pinch to zoom." : "Drag the photo on the design to reposition it; scroll or pinch to zoom."),
     }),
   ]);
 }
@@ -951,6 +952,25 @@ async function boot() {
     close.addEventListener("click", () => window.parent.postMessage({ type: "jasmin:close" }, parentOrigin || "*"));
   }
   new ResizeObserver(fitPaper).observe($("#paper-shadow"));
+
+  // On a phone the preview is pinned under the header and sized from the part of the screen
+  // that is really visible, which shrinks while the keyboard is up (see editor.css).
+  const root = document.documentElement;
+  const topbar = $(".topbar");
+  const measure = () => {
+    const vv = window.visualViewport;
+    const visible = vv ? vv.height : window.innerHeight;
+    root.style.setProperty("--vvh", `${Math.round(visible)}px`);
+    root.style.setProperty("--topbar", `${Math.round(topbar.getBoundingClientRect().height)}px`);
+    $("#app").classList.toggle("keyboard", visible < window.innerHeight * 0.75);
+  };
+  measure();
+  new ResizeObserver(measure).observe(topbar);
+  window.visualViewport?.addEventListener("resize", measure);
+  window.addEventListener("resize", measure);
+
+  // Words that fit the device: nobody drops a file or scrolls a wheel on a phone.
+  if (TOUCH) $("#stage-hint").textContent = "Tap the photo area to add your photo · drag to move it · pinch to zoom";
   $("#app").classList.remove("is-loading");
   renderAll();
   window.addEventListener("beforeunload", (e) => {
