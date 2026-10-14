@@ -48,6 +48,13 @@ class Settings:
     demo_store: bool = True
     # Print files: maximum embedded photo resolution.
     print_max_dpi: int = 300
+    # Backups: one zip per backup (database rows and every stored file). The folder
+    # defaults to <data_dir>/backups; keep the newest ``backup_keep``. With
+    # ``backup_auto`` one is made every day at ``backup_hour`` (UTC).
+    backup_dir: Path | None = None
+    backup_keep: int = 14
+    backup_auto: bool = False
+    backup_hour: int = 3
 
     @property
     def webhook_secret(self) -> str:
@@ -90,4 +97,11 @@ def load_settings() -> Settings:
     s.demo_store = _bool(env.get("DEMO_STORE"), True)
     if env.get("PRINT_MAX_DPI"):
         s.print_max_dpi = int(env["PRINT_MAX_DPI"])
+    if env.get("BACKUP_DIR"):
+        s.backup_dir = Path(env["BACKUP_DIR"]).resolve()
+    if env.get("BACKUP_KEEP"):
+        s.backup_keep = max(1, int(env["BACKUP_KEEP"]))
+    s.backup_auto = _bool(env.get("BACKUP_AUTO"), False)
+    if env.get("BACKUP_HOUR_UTC"):
+        s.backup_hour = min(max(int(env["BACKUP_HOUR_UTC"]), 0), 23)
     return s

@@ -690,3 +690,39 @@ pre {
     grid-template-columns: 1fr;
   }
 }
+
+/* Backups: on a phone each backup is a block, not a row of five narrow columns. */
+@media (max-width: 640px) {
+  .table.backups,
+  .table.backups tbody {
+    display: block;
+  }
+  .table.backups thead {
+    display: none;
+  }
+  .table.backups tr {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 6px 12px;
+    padding: 14px 16px;
+    border-top: 1px solid var(--line, #e6e0d6);
+  }
+  .table.backups tr:first-child {
+    border-top: 0;
+  }
+  .table.backups td {
+    padding: 0;
+    border: 0;
+  }
+  .table.backups td:nth-child(3) {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .table.backups td:nth-child(4) {
+    grid-row: 3;
+  }
+  .table.backups td:nth-child(5) {
+    grid-row: 3;
+  }
+}

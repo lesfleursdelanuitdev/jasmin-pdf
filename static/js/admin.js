@@ -1,4 +1,4 @@
-// Jasmin studio (admin): templates, fonts, orders, Shopify setup.
+// Jasmin studio (admin): templates, fonts, orders, Shopify setup, backups.
 const view = document.querySelector("#view");
 const render = (...nodes) => view.replaceChildren(...nodes.filter(Boolean));
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -90,6 +90,7 @@ const routes = [
   [/^#\/orders$/, () => ordersView()],
   [/^#\/fonts$/, () => fontsView()],
   [/^#\/shopify$/, () => shopifyView()],
+  [/^#\/backups$/, () => backupsView()],
   [/.*/, () => templatesView()],
 ];
 
@@ -825,5 +826,94 @@ api("GET", "/admin/api/me")
     account.hidden = false;
   })
   .catch(() => {});
+
+
+// ---------------------------------------------------------------------------
+// Backups
+// ---------------------------------------------------------------------------
+const fmtSize = (bytes) => (bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
+
+async function backupsView() {
+  const status = h("p", { class: "muted", role: "status" });
+  const button = h("button", { class: "btn btn-primary", type: "button", text: "Back up now" });
+  const listHost = h("div");
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+  function show(data) {
+    button.disabled = data.running;
+    button.textContent = data.running ? "Backing up…" : "Back up now";
+    status.textContent = data.running
+      ? "A backup is being made. This page updates when it is done."
+      : data.error
+        ? `The last backup failed: ${data.error}`
+        : data.backups.length
+          ? `Last backup: ${fmtDate(data.backups[0].created)}.`
+          : "No backup has been made yet.";
+    status.className = data.error && !data.running ? "notice notice-bad" : "muted";
+    listHost.replaceChildren(
+      data.backups.length
+        ? h("table", { class: "table backups" }, [
+            h("thead", {}, [h("tr", {}, ["Made", "How", "Contains", "Size", ""].map((x) => h("th", { text: x })))]),
+            h(
+              "tbody",
+              {},
+              data.backups.map((b) =>
+                h("tr", {}, [
+                  h("td", {}, [h("strong", { text: fmtDate(b.created) })]),
+                  h("td", {}, [h("span", { class: `pill ${b.kind === "automatic" ? "pill-muted" : "pill"}`, text: b.kind })]),
+                  h("td", {
+                    text: b.readable
+                      ? `${plural(b.tables.templates ?? 0, "template")}, ${plural(b.tables.designs ?? 0, "design")}, ${plural(b.tables.orders ?? 0, "order")}, ${plural(b.files, "file")}`
+                      : "Cannot be read",
+                  }),
+                  h("td", { text: fmtSize(b.size) }),
+                  h("td", {}, [h("a", { class: "btn btn-small", href: `/admin/api/backups/${encodeURIComponent(b.name)}`, download: b.name, text: "Download" })]),
+                ]),
+              ),
+            ),
+          ])
+        : h("div", { class: "card empty-state" }, [h("p", { text: "No backups yet." })]),
+    );
+  }
+
+  // While one is being made, look again every two seconds, for as long as this page is shown.
+  async function refresh() {
+    if (location.hash !== "#/backups") return;
+    const data = await api("GET", "/admin/api/backups");
+    show(data);
+    if (data.running) setTimeout(() => refresh().catch(() => {}), 2000);
+    return data;
+  }
+
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      await api("POST", "/admin/api/backups");
+    } catch (err) {
+      if (err.status !== 409) toast(err.message, true);
+    }
+    refresh().catch((err) => toast(err.message, true));
+  });
+
+  const data = await api("GET", "/admin/api/backups");
+  render(
+    h("div", { class: "view-head" }, [h("h1", { text: "Backups" })]),
+    h("div", { class: "card" }, [
+      h("p", {
+        text: "A backup is one zip file with everything in Jasmin studio: templates, customer photos, designs, proofs, orders and print files. Backups are kept on the server, apart from the database and the file storage.",
+      }),
+      h("p", {
+        class: "muted",
+        text: `${data.automatic ? `One is made automatically every day at ${String(data.hourUtc).padStart(2, "0")}:00 UTC. ` : "Automatic backups are off. "}The newest ${data.keep} are kept; older ones are removed. Download one now and then to keep a copy somewhere else.`,
+      }),
+      button,
+      status,
+    ]),
+    h("div", { class: "view-head", style: "margin-top:24px" }, [h("h2", { text: "Backups on the server" })]),
+    listHost,
+  );
+  show(data);
+  if (data.running) setTimeout(() => refresh().catch(() => {}), 2000);
+}
 
 route();

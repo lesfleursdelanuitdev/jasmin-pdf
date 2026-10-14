@@ -14,6 +14,7 @@ from __future__ import annotations
 import mimetypes
 import os
 import secrets
+import shutil
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -24,6 +25,8 @@ from .config import Settings
 
 LIST_PAGE = 100
 DELETE_BATCH = 100
+# The top-level folders of the data directory that hold stored files.
+FOLDERS = ("pdfs", "templates", "uploads", "designs", "print", "fonts")
 
 
 class StorageError(OSError):
@@ -66,6 +69,19 @@ class LocalStorage:
 
     def delete_tree(self, rel_dir: str) -> None:
         pass
+
+    def keys(self) -> list[str]:
+        """Every stored file, as a path relative to the data directory."""
+        return sorted(p.relative_to(self.root).as_posix() for f in FOLDERS for p in (self.root / f).rglob("*") if p.is_file())
+
+    def fetch(self, rel: str, dest: Path) -> bool:
+        """Copy one stored file to ``dest`` (anywhere); False when it does not exist."""
+        src = self.root / rel
+        if not src.is_file():
+            return False
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dest)
+        return True
 
     def close(self) -> None:
         pass
@@ -244,6 +260,14 @@ class SupabaseStorage:
         keys = self._walk(key)
         for i in range(0, len(keys), DELETE_BATCH):
             self._request("DELETE", f"/object/{quote(self.bucket, safe='')}", json={"prefixes": keys[i : i + DELETE_BATCH]})
+
+    def keys(self) -> list[str]:
+        """Every object in the bucket, as a path relative to the data directory."""
+        return sorted(key for f in FOLDERS for key in self._walk(f))
+
+    def fetch(self, rel: str, dest: Path) -> bool:
+        """Download one object to ``dest`` (anywhere); False when it does not exist."""
+        return self._download(rel, dest)
 
     def close(self) -> None:
         self._http.close()

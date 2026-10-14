@@ -31,8 +31,7 @@ def fonts() -> FontLibrary:
 TEST_DATABASE_URL = os.environ.get("JASMIN_TEST_DATABASE_URL", "")
 
 
-@pytest.fixture
-def database_url():
+def _fresh_database():
     if not TEST_DATABASE_URL:
         yield ""
         return
@@ -46,6 +45,17 @@ def database_url():
     yield urlunsplit(parts._replace(query=query))
     with psycopg.connect(TEST_DATABASE_URL, autocommit=True) as conn:
         conn.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+@pytest.fixture
+def database_url():
+    yield from _fresh_database()
+
+
+@pytest.fixture
+def database_url_2():
+    """A second, separate database (for restoring a backup into an empty site)."""
+    yield from _fresh_database()
 
 
 @pytest.fixture

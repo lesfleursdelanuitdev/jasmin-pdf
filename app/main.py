@@ -23,6 +23,7 @@ import httpx
 
 from . import demo_store, shopify
 from .auth import COOKIE, SESSION_SECONDS, AdminAuth, SignInRefused, SignInUnavailable
+from .backup import Backups, Scheduler
 from .config import ROOT, Settings, load_settings
 from .fonts import FontError
 from .services import Invalid, NotFound, Services
@@ -57,6 +58,11 @@ def create_app(
     app.state.services = svc
     app.state.settings = settings
     app.state.auth = auth
+    backups = Backups(svc, settings.backup_dir or settings.data_dir / "backups", settings.backup_keep)
+    app.state.backups = backups
+    schedule = Scheduler(backups, settings.backup_hour) if settings.backup_auto else None
+    if schedule:
+        schedule.start()
     app.add_middleware(GZipMiddleware, minimum_size=2048)
 
     @app.exception_handler(NotFound)
@@ -377,6 +383,31 @@ def create_app(
         path = svc.dirs["print"] / item["print_file"]
         svc.storage.ensure(f"print/{item['print_file']}")
         return FileResponse(path, media_type="application/pdf", filename=path.name)
+
+    @app.get("/admin/api/backups", dependencies=admin)
+    def list_backups():
+        return {
+            "running": backups.running,
+            "error": backups.error,
+            "automatic": bool(schedule),
+            "hourUtc": settings.backup_hour,
+            "keep": backups.keep,
+            "backups": backups.list(),
+        }
+
+    @app.post("/admin/api/backups", dependencies=admin)
+    def start_backup():
+        # Made in the background: with many files it takes longer than a request should.
+        if not backups.start("manual"):
+            return JSONResponse({"detail": "A backup is already being made."}, status_code=409)
+        return JSONResponse({"started": True}, status_code=202)
+
+    @app.get("/admin/api/backups/{name}", dependencies=admin)
+    def download_backup(name: str):
+        path = backups.path(name)
+        if path is None:
+            raise NotFound("backup not found")
+        return FileResponse(path, media_type="application/zip", filename=name)
 
     @app.get("/admin/api/shopify", dependencies=admin)
     def shopify_settings():
