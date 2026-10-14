@@ -148,6 +148,7 @@ a {
 }
 
 input[type="text"],
+input[type="search"],
 input[type="email"],
 input[type="number"],
 input[type="password"],

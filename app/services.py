@@ -702,6 +702,18 @@ class Services:
         self.storage.put(f"fonts/{info.path.name}")
         return info.public()
 
+    def import_fonts(self, files: list[tuple[str, bytes]]) -> dict:
+        """Fonts fetched from elsewhere (Google Fonts). One that is already in the studio is left alone."""
+        added, already = [], []
+        for label, data in files:
+            info = self.fonts.add_upload("import.ttf", data, replace=False)
+            if info is None:
+                already.append(label)
+                continue
+            self.storage.put(f"fonts/{info.path.name}")
+            added.append(info.public())
+        return {"added": added, "already": already}
+
     def make_print_files(self, order_id: str) -> dict:
         """Make the print files an order still lacks. Raises when one could not be made, so that the job is tried again."""
         self.generate_print_files(order_id)

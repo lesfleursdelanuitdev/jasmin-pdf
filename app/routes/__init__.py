@@ -16,6 +16,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from ..auth import COOKIE, AdminAuth
 from ..backup import Backups, Scheduler
 from ..config import ROOT, Settings
+from ..google_fonts import GoogleFonts
 from ..jobs import Jobs
 from ..services import Services
 from ..shopify import ShopifyAdmin
@@ -36,6 +37,7 @@ class Studio:
     backups: Backups
     schedule: Scheduler | None
     jobs: Jobs
+    google: GoogleFonts
 
     def own_origin(self, request: Request) -> None:
         # A browser sends Origin with every cross-site POST, PATCH, PUT and DELETE.

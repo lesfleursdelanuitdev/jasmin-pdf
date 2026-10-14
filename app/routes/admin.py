@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 
+from .. import google_fonts as google_fonts_module
 from .. import shopify
 from ..auth import MIN_PASSWORD
 from ..services import NotFound
@@ -103,6 +104,29 @@ def router(studio: Studio) -> APIRouter:
     @r.post("/fonts")
     async def upload_font(file: UploadFile = File(...)):
         return await run_in_threadpool(svc.add_font, file.filename or "font.ttf", await file.read())
+
+    # Google Fonts: search the catalogue, and put the chosen styles of a family in the studio.
+    @r.get("/google-fonts")
+    def google_fonts(q: str = "", category: str = ""):
+        have = {(f.family.lower(), f.style.replace(" ", "").lower()) for f in svc.fonts.all()}
+        found = studio.google.search(q[:80], category[:40])
+        for family in found["families"]:
+            for style in family["styles"]:
+                style["installed"] = (family["family"].lower(), style["label"].replace(" ", "").lower()) in have
+        return {**found, "categories": studio.google.categories()}
+
+    @r.post("/google-fonts")
+    async def import_google_font(request: Request):
+        body = await request.json()
+        family, styles = str(body.get("family", "")), [str(s) for s in body.get("styles") or []]
+        if not styles or len(styles) > google_fonts_module.MAX_STYLES:
+            raise HTTPException(422, f"Choose between 1 and {google_fonts_module.MAX_STYLES} styles.")
+
+        def fetch() -> dict:
+            files = [(f"{family} {google_fonts_module.style_label(s)}", studio.google.download(family, s)) for s in dict.fromkeys(styles)]
+            return svc.import_fonts(files)
+
+        return await run_in_threadpool(fetch)
 
     @r.get("/orders")
     def list_orders():

@@ -22,6 +22,7 @@ from .auth import AccountError, AdminAuth, SignInUnavailable
 from .backup import Backups, Scheduler
 from .config import Settings, describe, load_settings
 from .fonts import FontError
+from .google_fonts import GoogleFonts, GoogleFontsError
 from .jobs import Jobs
 from .routes import STATIC, Studio, admin, pages, public, webhooks
 from .services import Invalid, NotFound, Services
@@ -80,6 +81,10 @@ def error_handlers(app: FastAPI) -> None:
     async def account_error(_: Request, exc: AccountError):
         return answer(422, str(exc), [str(exc)])
 
+    @app.exception_handler(GoogleFontsError)
+    async def google_fonts_error(_: Request, exc: GoogleFontsError):
+        return answer(502, str(exc))
+
     @app.exception_handler(StorageError)
     async def storage_error(_: Request, exc: StorageError):
         log.error("file storage: %s", exc)
@@ -113,7 +118,7 @@ def create_app(
             shop_admin.add_order_tags(order["id"], ["jasmin-print-ready"])
 
     jobs = Jobs(svc.db, {"print": print_order}, inline=settings.jobs_inline)
-    studio = Studio(settings, svc, auth, shop_admin, backups, schedule, jobs)
+    studio = Studio(settings, svc, auth, shop_admin, backups, schedule, jobs, GoogleFonts())
 
     app = FastAPI(title="Jasmin PDF", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.studio = studio

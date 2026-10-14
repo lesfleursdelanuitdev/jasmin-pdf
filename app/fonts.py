@@ -192,7 +192,9 @@ class FontLibrary:
                 return f
         return None
 
-    def add_upload(self, filename: str, data: bytes) -> FontInfo:
+    def add_upload(self, filename: str, data: bytes, replace: bool = True) -> FontInfo | None:
+        """Put a font file in the studio. With ``replace`` off, a font that is already there is
+        left as it is (``None``): templates were laid out with it, and another version may differ."""
         if not filename.lower().endswith(".ttf"):
             raise FontError("Upload a .ttf file")
         self.upload_dir.mkdir(parents=True, exist_ok=True)
@@ -203,6 +205,9 @@ class FontLibrary:
         except FontError:
             tmp.unlink(missing_ok=True)
             raise
+        if not replace and info.name in self._fonts:
+            tmp.unlink(missing_ok=True)
+            return None
         safe = re.sub(r"[^A-Za-z0-9_.-]", "", info.name) or "font"
         dest = self.upload_dir / f"{safe}.ttf"
         tmp.replace(dest)
