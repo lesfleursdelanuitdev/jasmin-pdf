@@ -751,7 +751,8 @@ function googleFontsCard() {
   function show(out) {
     families = out.families;
     const more = out.total - families.length;
-    list.replaceChildren(
+    // Only real rows go in: a bare true/false handed to replaceChildren is written out as text.
+    const rows = [
       ...families.map((f, i) => {
         const n = f.styles.length;
         const li = h("li", { role: "option", id: `gf-opt-${i}`, "aria-selected": "false" }, [
@@ -767,7 +768,8 @@ function googleFontsCard() {
       }),
       !families.length && h("li", { class: "gf-note", text: "No font matches that. Check the spelling, or try part of the name." }),
       more > 0 && h("li", { class: "gf-note", text: `${more} more match. Type more to narrow it down.` }),
-    );
+    ];
+    list.replaceChildren(...rows.filter(Boolean));
     list.hidden = false;
     list.scrollTop = 0;
     active = -1;
