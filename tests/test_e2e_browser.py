@@ -75,3 +75,46 @@ def test_customer_journey(server):
         page.wait_for_selector("text=Download print PDF")
         assert errors == []
         browser.close()
+
+
+def test_admin_element_cards_open_and_close(server):
+    """An element card on the template page closes again when its header is clicked a second time."""
+    from playwright.sync_api import expect, sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(executable_path=os.environ.get("PLAYWRIGHT_CHROMIUM") or None)
+        ctx = browser.new_context(http_credentials={"username": "admin", "password": "jasmin"})
+        page = ctx.new_page()
+        errors: list[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+
+        page.goto(f"{server}/admin#/templates/wedding-invitation")
+        cards = page.locator(".el-card")
+        first, second = cards.nth(0), cards.nth(1)
+        first.locator("summary").wait_for()
+        is_open = "el => el.open"
+
+        first.locator("summary").click()
+        expect(first).to_have_class("el-card selected")
+        assert first.evaluate(is_open)
+        first.locator("summary").click()
+        page.wait_for_timeout(200)
+        assert not first.evaluate(is_open)
+
+        # Cards open and close independently, and the keyboard works too.
+        first.locator("summary").click()
+        second.locator("summary").click()
+        expect(second).to_have_class("el-card selected")
+        first.locator("summary").click()
+        page.wait_for_timeout(200)
+        assert not first.evaluate(is_open) and second.evaluate(is_open)
+        second.locator("summary").press("Enter")
+        page.wait_for_timeout(200)
+        assert not second.evaluate(is_open)
+
+        # Clicking an element's box on the preview still opens its card.
+        page.locator(".preview svg .box").first.click()
+        page.wait_for_timeout(200)
+        assert page.locator(".el-card.selected").evaluate(is_open)
+        assert errors == []
+        browser.close()

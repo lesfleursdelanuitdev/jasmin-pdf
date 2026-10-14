@@ -484,7 +484,9 @@ async function templateView(id) {
       );
     }
     const card = h("details", { class: "el-card", "data-id": el.id }, [
-      h("summary", { onclick: () => setTimeout(() => select(el.id)) }, [
+      // The browser opens or closes the card first. Select the element only when the card was opened:
+      // select() opens the selected card, so calling it after a close would open it again.
+      h("summary", { onclick: () => setTimeout(() => card.open && select(el.id)) }, [
         h("span", { class: `pill ${el.type === "image" ? "pill-muted" : ""}`, text: el.type === "image" ? "Photo" : "Text" }),
         h("strong", { text: el.label }),
         h("span", { class: "small muted", text: pageName(el.page, pages.length) }),
