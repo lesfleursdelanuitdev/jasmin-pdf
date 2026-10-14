@@ -63,6 +63,9 @@ class Settings:
     # Photos and drafts that never became an approved design are removed after this many
     # days (0: never). Done once a day, before the backup.
     retention_days: int = 0
+    # Refuse to start with settings that would leave the app open (see ``describe``). On for a
+    # real run, which reads its settings from the environment; off for settings made in code.
+    strict: bool = False
     backup_hour: int = 3
 
     @property
@@ -89,9 +92,46 @@ class Settings:
         return origins
 
 
+def describe(s: Settings) -> tuple[str, list[str], list[str]]:
+    """What this configuration amounts to: one line naming the modes, the warnings, and the errors that must stop the app."""
+    supabase_auth = bool(s.supabase_url and s.supabase_publishable_key and s.admin_emails)
+    supabase_files = bool(s.supabase_url and s.supabase_secret_key)
+    store = bool(s.shopify_shop_domain and (s.shopify_admin_token or (s.shopify_client_id and s.shopify_client_secret)))
+    modes = (
+        f"database {'Postgres' if s.database_url else 'SQLite'}, files {'Supabase Storage' if supabase_files else 'data directory only'}, "
+        f"admin sign-in {'Supabase' if supabase_auth else 'HTTP Basic'}, Shopify store {'connected' if store else 'not connected'}, "
+        f"demo store {'on' if s.demo_store else 'off'}, backups {'daily' if s.backup_auto else 'by hand'}, "
+        f"housekeeping {f'after {s.retention_days} days' if s.retention_days else 'off'}"
+    )
+    public = s.app_url.startswith("https://")
+    warnings: list[str] = []
+    errors: list[str] = []
+    if not supabase_auth and (s.supabase_url or s.supabase_publishable_key or s.admin_emails):
+        missing = [n for n, v in (("SUPABASE_URL", s.supabase_url), ("SUPABASE_PUBLISHABLE_KEY", s.supabase_publishable_key), ("ADMIN_EMAILS", s.admin_emails)) if not v]
+        errors.append(f"Supabase sign-in is half set up ({', '.join(missing)} missing): the admin would fall back to the shared password.")
+    if supabase_auth and not s.supabase_secret_key:
+        warnings.append("SUPABASE_SECRET_KEY is not set: admins cannot change passwords or add admins.")
+    if supabase_auth and not s.session_secret:
+        warnings.append("SESSION_SECRET is not set: admin sign-ins will not survive a restart.")
+    if public and not supabase_auth and s.admin_password == Settings.admin_password:
+        errors.append("APP_URL is public and the admin still has the default password: set ADMIN_PASSWORD or set up Supabase sign-in.")
+    if supabase_files and not s.database_url:
+        warnings.append("Files are in Supabase Storage but the database is a SQLite file in the data directory: losing that directory loses the database.")
+    if s.demo_store and store:
+        warnings.append("The demo store is on although a Shopify store is connected: anyone can place fake orders in it. Set DEMO_STORE=false.")
+    if public and not s.demo_store and not (s.shopify_webhook_secret or s.shopify_client_secret):
+        warnings.append("No webhook secret is set: orders from Shopify cannot be verified and will be refused.")
+    if bool(s.shopify_client_id) != bool(s.shopify_client_secret):
+        warnings.append("Only one of SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET is set.")
+    if store and not s.storefront_origins:
+        warnings.append("STOREFRONT_ORIGINS is not set: the editor can only be opened from the store's myshopify.com address.")
+    return modes, warnings, errors
+
+
 def load_settings() -> Settings:
     env = os.environ
     s = Settings()
+    s.strict = True
     if env.get("JASMIN_DATA_DIR"):
         s.data_dir = Path(env["JASMIN_DATA_DIR"]).resolve()
     s.database_url = env.get("DATABASE_URL", "").strip()

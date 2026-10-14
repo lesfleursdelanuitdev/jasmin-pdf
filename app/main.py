@@ -26,7 +26,7 @@ import httpx
 from . import demo_store, shopify
 from .auth import COOKIE, MIN_PASSWORD, SESSION_SECONDS, AccountError, AdminAuth, SignInRefused, SignInUnavailable
 from .backup import Backups, Scheduler
-from .config import ROOT, Settings, load_settings
+from .config import ROOT, Settings, describe, load_settings
 from .fonts import FontError
 from .services import Invalid, NotFound, Services
 from .storage import Missing, Storage, StorageError
@@ -56,6 +56,15 @@ def create_app(
     shopify_transport: httpx.BaseTransport | None = None,
 ) -> FastAPI:
     settings = settings or load_settings()
+    modes, warnings, errors = describe(settings)
+    log.info("starting with: %s", modes)
+    for message in warnings:
+        log.warning("settings: %s", message)
+    for message in errors:
+        log.error("settings: %s", message)
+    if errors and settings.strict:
+        # Better not to start than to run open to the world.
+        raise RuntimeError("Jasmin Studio will not start with these settings: " + " ".join(errors))
     svc = Services(settings, storage)
     auth = AdminAuth(settings, auth_transport, svc.db)
     shop_admin = shopify.ShopifyAdmin(settings, shopify_transport)

@@ -113,7 +113,11 @@ def validate_values(template: dict, values: dict, uploads: UploadResolver, fonts
             lines = text.split("\n")
             if el.get("multiline") and len(lines) > int(el.get("maxLines", 1)):
                 errors.append(f"{label}: at most {el['maxLines']} lines.")
-            font = fonts.require(el["font"])
+            font = fonts.get(el["font"])
+            if font is None:
+                # Not printable as designed, and not the customer's doing: said once, plainly.
+                errors.append(f"{label}: this design cannot be printed at the moment (a font is missing). Please contact the shop.")
+                continue
             text_for_font = text.upper() if el.get("transform") == "uppercase" else text
             missing = font.unsupported(text_for_font)
             if missing:

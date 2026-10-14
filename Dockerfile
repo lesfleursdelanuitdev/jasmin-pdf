@@ -2,8 +2,9 @@ FROM python:3.12-slim
 
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 JASMIN_DATA_DIR=/data
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# requirements.lock pins every package; requirements.txt says what the app asks for.
+COPY requirements.txt requirements.lock ./
+RUN pip install --no-cache-dir -r requirements.lock
 COPY app ./app
 COPY static ./static
 COPY fonts ./fonts

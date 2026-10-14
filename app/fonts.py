@@ -161,9 +161,17 @@ class FontLibrary:
         return self._fonts.get(name)
 
     def require(self, name: str) -> FontInfo:
+        """The font, for anything that is printed. A font that is missing is an error: text set in another one would print wrong."""
+        info = self._fonts.get(name)
+        if info is None:
+            raise FontError(f"The font {name} is not in the studio. Upload it under Fonts.")
+        return info
+
+    def display(self, name: str) -> FontInfo:
+        """The font for showing text on screen: the default one stands in when it is missing."""
         info = self._fonts.get(name) or self._fonts.get(DEFAULT_FONT)
         if info is None:
-            raise FontError(f"Font {name!r} is not installed")
+            raise FontError(f"The font {name} is not in the studio. Upload it under Fonts.")
         return info
 
     def match(self, pdf_font_name: str) -> FontInfo | None:

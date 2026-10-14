@@ -234,6 +234,11 @@ class Services:
             if patch["status"] not in ("draft", "published"):
                 raise Invalid("status must be draft or published")
             status = patch["status"]
+        if status == "published":
+            # What customers order must be printable: every font of an editable text is in the studio.
+            absent = sorted({e["font"] for e in active_elements(definition) if e["type"] == "text" and self.fonts.get(e["font"]) is None})
+            if absent:
+                raise Invalid(f"This template uses fonts that are not in the studio: {', '.join(absent)}. Upload them under Fonts before publishing.")
         revision = t["revision"] + 1
         # The new revision gets the previous one's images, unless an element was switched on or
         # off (then they are built again) or the previous ones are not stored any more.
@@ -302,7 +307,7 @@ class Services:
             "pages": definition["pages"],
             "stacks": definition["stacks"],
             "elements": elements,
-            "fonts": {name: self.fonts.require(name).metrics() for name in sorted(fonts)},
+            "fonts": {name: self.fonts.display(name).metrics() for name in sorted(fonts)},
         }
 
     # ------------------------------------------------------------------
