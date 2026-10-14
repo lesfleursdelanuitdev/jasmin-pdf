@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from datetime import datetime, timedelta, timezone
 import hashlib
 import io
 import logging
@@ -633,6 +634,44 @@ class Services:
         for item in items:
             item["thumbnailUrl"] = f"/api/designs/{item['design_id']}/thumbnail.jpg" if item["design_id"] else None
         return order
+
+    # ------------------------------------------------------------------
+    # Housekeeping
+    # ------------------------------------------------------------------
+    def cleanup(self, days: int, dry_run: bool = False) -> dict:
+        """Remove what customers left behind and never ordered.
+
+        Drafts not touched for ``days`` days go, with their proof files. Photos uploaded more
+        than ``days`` days ago go too, unless a design that still exists uses them. Approved
+        and ordered designs, and everything they use, are never touched.
+        """
+        if days <= 0:
+            return {"drafts": 0, "uploads": 0}
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).replace(microsecond=0).isoformat()
+        drafts = [r["id"] for r in self.db.all("SELECT id FROM designs WHERE status='draft' AND updated_at<?", (cutoff,))]
+        # What the designs that stay still use: every other design, of any age and status.
+        used: set[str] = set()
+        for row in self.db.all('SELECT id, "values" FROM designs'):
+            if row["id"] not in drafts:
+                used.update(re.findall(r"img_[A-Za-z0-9]+", row["values"] or ""))
+        uploads = [r for r in self.db.all("SELECT id, path, preview_path FROM uploads WHERE created_at<?", (cutoff,)) if r["id"] not in used]
+        report = {"drafts": len(drafts), "uploads": len(uploads)}
+        if dry_run:
+            return report
+        for design_id in drafts:
+            # Files first: a row without files is harmless, files without a row would never be found again.
+            self.storage.delete_tree(f"designs/{design_id}")
+            shutil.rmtree(self.design_dir(design_id), ignore_errors=True)
+            self.db.execute("DELETE FROM designs WHERE id=? AND status='draft'", (design_id,))
+        for row in uploads:
+            names = [row["path"], row["preview_path"]]
+            self.storage.delete([f"uploads/{n}" for n in names])
+            for name in names:
+                (self.dirs["uploads"] / name).unlink(missing_ok=True)
+            self.db.execute("DELETE FROM uploads WHERE id=?", (row["id"],))
+        if drafts or uploads:
+            log.info("cleanup: removed %s drafts and %s photos older than %s days", len(drafts), len(uploads), days)
+        return report
 
     def pending_orders(self) -> list[str]:
         """Orders with an item whose print file was never made (the app stopped while it was being rendered)."""

@@ -147,7 +147,7 @@ def test_the_admin_makes_lists_and_downloads_a_backup(app, admin, client):
     assert client.get("/admin/api/backups").status_code == 401
     assert client.post("/admin/api/backups").status_code == 401
     before = admin.get("/admin/api/backups").json()
-    assert before == {"running": False, "error": None, "automatic": False, "hourUtc": 3, "keep": 14, "backups": []}
+    assert before == {"running": False, "error": None, "automatic": False, "hourUtc": 3, "keep": 14, "retentionDays": 0, "backups": []}
 
     assert admin.post("/admin/api/backups").status_code == 202
     app.state.backups.wait(60)

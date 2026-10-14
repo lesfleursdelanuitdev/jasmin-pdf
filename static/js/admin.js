@@ -889,9 +889,11 @@ async function shopifyView() {
   );
 }
 
-// The signed-in address and a Sign out button, when the admin is behind Supabase sign-in.
+// The signed-in address and a Sign out button, when the admin is behind Supabase sign-in;
+// and no link to the demo store when it is switched off.
 api("GET", "/admin/api/me")
-  .then(({ email }) => {
+  .then(({ email, demoStore }) => {
+    document.querySelector(".side-link").hidden = !demoStore;
     if (!email) return;
     const account = document.querySelector("#account");
     account.querySelector(".account-email").textContent = email;
@@ -979,6 +981,12 @@ async function backupsView() {
         class: "muted",
         text: `${data.automatic ? `One is made automatically every day at ${String(data.hourUtc).padStart(2, "0")}:00 UTC. ` : "Automatic backups are off. "}The newest ${data.keep} are kept; older ones are removed. Download one now and then to keep a copy somewhere else.`,
       }),
+      data.retentionDays
+        ? h("p", {
+            class: "muted",
+            text: `Housekeeping: photos and drafts that customers left behind are removed after ${data.retentionDays} days, unless an approved or ordered design uses them.`,
+          })
+        : null,
       button,
       status,
     ]),

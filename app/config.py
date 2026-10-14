@@ -60,6 +60,9 @@ class Settings:
     backup_auto: bool = False
     # At start, make the print files that were still pending when the app last stopped.
     resume_print_work: bool = False
+    # Photos and drafts that never became an approved design are removed after this many
+    # days (0: never). Done once a day, before the backup.
+    retention_days: int = 0
     backup_hour: int = 3
 
     @property
@@ -120,6 +123,8 @@ def load_settings() -> Settings:
         s.backup_keep = max(1, int(env["BACKUP_KEEP"]))
     s.backup_auto = _bool(env.get("BACKUP_AUTO"), False)
     s.resume_print_work = _bool(env.get("RESUME_PRINT_WORK"), True)
+    if env.get("RETENTION_DAYS"):
+        s.retention_days = max(0, int(env["RETENTION_DAYS"]))
     if env.get("BACKUP_HOUR_UTC"):
         s.backup_hour = min(max(int(env["BACKUP_HOUR_UTC"]), 0), 23)
     return s

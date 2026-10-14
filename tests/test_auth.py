@@ -70,7 +70,7 @@ def test_sign_in_sets_the_session_cookie_and_opens_the_admin(browser, fake):
     assert "fake-access-token" not in cookie and "fake-refresh-token" not in cookie
     assert browser.get("/admin").status_code == 200
     assert browser.get("/admin/api/templates").json() == []
-    assert browser.get("/admin/api/me").json() == {"email": ADMIN}
+    assert browser.get("/admin/api/me").json()["email"] == ADMIN
     sent = fake.requests[-1]
     assert sent.headers["apikey"] == PUBLISHABLE and b"correct horse" in sent.content
 
@@ -81,7 +81,7 @@ def test_the_cookie_is_not_marked_secure_on_plain_http(auth_settings, fake):
     with TestClient(app, base_url="http://localhost:8000", follow_redirects=False) as c:
         cookie = sign_in(c).headers["set-cookie"]
         assert "Secure" not in cookie and "HttpOnly" in cookie
-        assert c.get("/admin/api/me").json() == {"email": ADMIN}
+        assert c.get("/admin/api/me").json()["email"] == ADMIN
     app.state.services.db.close()
 
 
@@ -250,7 +250,7 @@ def test_basic_mode_is_unchanged(client, admin, app):
     assert client.get("/admin/api/templates").status_code == 401
     assert admin.get("/admin").status_code == 200
     assert admin.get("/admin/api/templates").status_code == 200
-    assert admin.get("/admin/api/me").json() == {"email": None}
+    assert admin.get("/admin/api/me").json() == {"email": None, "demoStore": True}
     assert client.post("/admin/login", data={"email": "a@b.c", "password": "x"}).status_code == 405
     assert client.post("/admin/logout").status_code in (404, 405)
     r = client.get("/admin/login", follow_redirects=False)

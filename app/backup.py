@@ -206,10 +206,11 @@ class Backups:
 class Scheduler(threading.Thread):
     """Makes one backup a day; the first one soon after start when the newest is stale or missing."""
 
-    def __init__(self, backups: Backups, hour: int):
+    def __init__(self, backups: Backups, hour: int, before: Callable[[], object] | None = None):
         super().__init__(name="jasmin-backup-schedule", daemon=True)
         self.backups = backups
         self.hour = hour
+        self.before = before  # the day's housekeeping, done just before the backup
         self._halt = threading.Event()
         self.due: datetime | None = None
 
@@ -223,6 +224,11 @@ class Scheduler(threading.Thread):
             again = datetime.now(timezone.utc)
             if next_run(again, self.hour, self.backups.newest()) > again + timedelta(minutes=5):
                 continue
+            if self.before is not None:
+                try:
+                    self.before()
+                except Exception:  # the backup is made all the same
+                    log.exception("daily housekeeping failed")
             if self.backups.start("automatic"):
                 self.backups.wait()
             if self.backups.error or self.backups.newest() is None:

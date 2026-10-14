@@ -66,7 +66,8 @@ def create_app(
     app.state.shop_admin = shop_admin
     backups = Backups(svc, settings.backup_dir or settings.data_dir / "backups", settings.backup_keep)
     app.state.backups = backups
-    schedule = Scheduler(backups, settings.backup_hour) if settings.backup_auto else None
+    housekeeping = (lambda: svc.cleanup(settings.retention_days)) if settings.retention_days else None
+    schedule = Scheduler(backups, settings.backup_hour, housekeeping) if settings.backup_auto else None
     if schedule:
         schedule.start()
     app.add_middleware(GZipMiddleware, minimum_size=2048)
@@ -321,7 +322,7 @@ def create_app(
 
     @app.get("/admin/api/me", dependencies=admin)
     def me(request: Request):
-        return {"email": auth.read(request.cookies.get(COOKIE))}
+        return {"email": auth.read(request.cookies.get(COOKIE)), "demoStore": settings.demo_store}
 
     # Accounts (only with Supabase sign-in): one's own password, and who else is an admin.
     def signed_in(request: Request) -> str:
@@ -465,6 +466,7 @@ def create_app(
             "automatic": bool(schedule),
             "hourUtc": settings.backup_hour,
             "keep": backups.keep,
+            "retentionDays": settings.retention_days if schedule else 0,
             "backups": backups.list(),
         }
 

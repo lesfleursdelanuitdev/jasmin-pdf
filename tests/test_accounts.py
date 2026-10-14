@@ -151,7 +151,7 @@ def test_wrong_current_passwords_are_throttled(me):
 
 def test_without_supabase_there_is_no_account_page(admin):
     assert admin.get("/admin/api/account").status_code == 404
-    assert admin.get("/admin/api/me").json() == {"email": None}
+    assert admin.get("/admin/api/me").json() == {"email": None, "demoStore": True}
 
 
 def test_the_sign_in_service_being_down_is_said_plainly(me, fake):

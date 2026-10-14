@@ -70,6 +70,9 @@ class LocalStorage:
     def delete_tree(self, rel_dir: str) -> None:
         pass
 
+    def delete(self, rels: list[str]) -> None:
+        """Remove single files for good (the copies in the data directory are the caller's)."""
+
     def keys(self) -> list[str]:
         """Every stored file, as a path relative to the data directory."""
         return sorted(p.relative_to(self.root).as_posix() for f in FOLDERS for p in (self.root / f).rglob("*") if p.is_file())
@@ -257,7 +260,11 @@ class SupabaseStorage:
         key = _clean(rel_dir)
         if key is None:
             return
-        keys = self._walk(key)
+        self.delete(self._walk(key))
+
+    def delete(self, rels: list[str]) -> None:
+        """Remove single objects from the bucket; ones that are not there are no error."""
+        keys = [k for k in (_clean(r) for r in rels) if k]
         for i in range(0, len(keys), DELETE_BATCH):
             self._request("DELETE", f"/object/{quote(self.bucket, safe='')}", json={"prefixes": keys[i : i + DELETE_BATCH]})
 

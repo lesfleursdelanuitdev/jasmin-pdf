@@ -61,6 +61,10 @@
   display: contents;
 }
 
+.side-link[hidden] {
+  display: none;
+}
+
 .side-link {
   margin-top: auto;
   color: #d9cfc4;
