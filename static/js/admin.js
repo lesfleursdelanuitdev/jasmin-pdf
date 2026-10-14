@@ -757,6 +757,33 @@ async function orderView(id) {
 async function shopifyView() {
   const c = await api("GET", "/admin/api/shopify");
   const flag = (cond, yes, no) => h("span", { class: `pill ${cond ? "pill-ok" : "pill-warn"}`, text: cond ? yes : no });
+
+  // Connection: what is set up, and a live test against the store.
+  const checkMsg = h("p", { class: "muted", role: "status" });
+  const checkBtn = h("button", { class: "btn", type: "button", text: "Test the connection" });
+  checkBtn.addEventListener("click", async () => {
+    checkBtn.disabled = true;
+    checkMsg.className = "muted";
+    checkMsg.textContent = "Asking Shopify…";
+    try {
+      const r = await api("POST", "/admin/api/shopify/check");
+      if (r.ok) {
+        checkMsg.className = r.missingScopes.length ? "notice notice-warn" : "notice notice-ok";
+        checkMsg.textContent = r.missingScopes.length
+          ? `Connected to ${r.shop}, but the app is missing a permission: ${r.missingScopes.join(", ")}. Release a new app version with it and approve it in the store.`
+          : `Connected to ${r.shop} (${r.domain}).`;
+      } else {
+        checkMsg.className = "notice notice-bad";
+        checkMsg.textContent = r.error;
+      }
+    } catch (err) {
+      checkMsg.className = "notice notice-bad";
+      checkMsg.textContent = err.message;
+    } finally {
+      checkBtn.disabled = false;
+    }
+  });
+
   render(
     h("div", { class: "view-head" }, [h("h1", { text: "Shopify setup" })]),
     c.appUrl.includes("localhost")
@@ -765,6 +792,27 @@ async function shopifyView() {
           html: `<b>APP_URL is ${c.appUrl}.</b> Shopify needs a public HTTPS address: deploy the app (or use a tunnel such as <code>cloudflared tunnel --url http://localhost:8000</code>) and set <code>APP_URL</code>.`,
         })
       : null,
+    h("div", { class: "card" }, [
+      h("h2", { text: "Connection" }),
+      h("div", { class: "kv" }, [
+        h("span", { class: "muted", text: "Store" }),
+        h("span", {}, [c.shopDomain ? h("code", { text: c.shopDomain }) : flag(false, "", "Not set yet")]),
+        h("span", { class: "muted", text: "Jasmin app" }),
+        h("span", {}, [flag(c.appConfigured, "Client ID and secret are set", "Client ID and secret are not set yet")]),
+        h("span", { class: "muted", text: "New orders" }),
+        h("span", {}, [flag(c.webhookSecretConfigured, "Checked against the app's secret", "Demo secret in use")]),
+        h("span", { class: "muted", text: "Order tags" }),
+        h("span", {}, [flag(c.adminApiConfigured, "On", "Off")]),
+      ]),
+      c.adminApiConfigured
+        ? h("p", { style: "margin-top:16px" }, [checkBtn])
+        : h("p", {
+            class: "muted",
+            style: "margin-top:16px",
+            text: "The store is connected where the app is installed, by setting the store's address and the Jasmin app's Client ID and secret. Ask whoever runs your Jasmin studio.",
+          }),
+      c.adminApiConfigured ? checkMsg : null,
+    ]),
     h("div", { class: "card" }, [
       h("div", { class: "steps" }, [
         h("div", { class: "step" }, [
@@ -778,27 +826,35 @@ async function shopifyView() {
           h("h3", { text: "Add the Personalize button to your product page" }),
           h("p", {
             class: "muted",
-            html: "Online Store → Themes → Customize → Products → Default product → <b>Add block → Custom Liquid</b>, paste this, and save. It hides the normal Add to cart for linked products.",
+            html: "In the theme editor, open the <b>Default product</b> template, choose <b>Add block</b> in the product information section, and pick <b>Personalize button</b> under Apps. Save. The button shows only on products linked to a template, and hides the normal Add to cart there.",
           }),
-          h("pre", { text: c.snippet }),
-          copyButton(c.snippet),
+          c.addBlockUrl
+            ? h("p", {}, [h("a", { class: "btn btn-primary", href: c.addBlockUrl, target: "_blank", rel: "noopener", text: "Open the theme editor and add it" })])
+            : h("p", { class: "muted", text: "Once the store is connected, a button here opens the theme editor with the block ready to place." }),
+          h("details", {}, [
+            h("summary", { text: "My theme has no app blocks" }),
+            h("p", {
+              class: "muted",
+              html: "Older themes cannot hold app blocks. Use <b>Add block → Custom Liquid</b> on the product page instead and paste this:",
+            }),
+            h("pre", { text: c.snippet }),
+            copyButton(c.snippet),
+          ]),
         ]),
         h("div", { class: "step" }, [
-          h("h3", { text: "Send new orders to Jasmin" }),
+          h("h3", { text: "New orders arrive by themselves" }),
           h("p", {
             class: "muted",
-            html: "Settings → Notifications → Webhooks → <b>Create webhook</b>: event <i>Order creation</i>, format <i>JSON</i>, URL below. Copy the signing secret shown on that page into <code>SHOPIFY_WEBHOOK_SECRET</code>.",
+            text: "The Jasmin app tells Shopify to send every new order here. Orders with a personalised item appear under Orders, and their print files are made at once. Nothing to set up in the store.",
           }),
           h("pre", { text: c.webhookUrl }),
-          h("p", {}, [copyButton(c.webhookUrl), " ", flag(c.webhookSecretConfigured, "Secret configured", "SHOPIFY_WEBHOOK_SECRET not set (demo secret in use)")]),
         ]),
         h("div", { class: "step" }, [
-          h("h3", { text: "Optional: tag orders in Shopify" }),
+          h("h3", { text: "Orders are tagged in Shopify" }),
           h("p", {
             class: "muted",
-            html: "Create a custom app (Settings → Apps → Develop apps) with the <code>write_orders</code> scope and set <code>SHOPIFY_SHOP_DOMAIN</code> and <code>SHOPIFY_ADMIN_TOKEN</code>. Orders are then tagged <code>jasmin-print-ready</code>, <code>jasmin-in-production</code> and <code>jasmin-shipped</code>.",
+            html: "Personalised orders get the tags <code>jasmin-print-ready</code>, <code>jasmin-in-production</code> and <code>jasmin-shipped</code> as they move along, so you can filter them in Shopify.",
           }),
-          flag(c.adminApiConfigured, "Admin API connected", "Not connected"),
         ]),
       ]),
     ]),
@@ -807,8 +863,6 @@ async function shopifyView() {
       h("div", { class: "kv" }, [
         h("span", { class: "muted", text: "APP_URL" }),
         h("code", { text: c.appUrl }),
-        h("span", { class: "muted", text: "Shop domain" }),
-        h("span", { text: c.shopDomain || "(not set)" }),
         h("span", { class: "muted", text: "Editor may be embedded by" }),
         h("span", { text: c.frameAncestors.join(" ") }),
         h("span", { class: "muted", text: "Demo store" }),

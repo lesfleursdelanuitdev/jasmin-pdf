@@ -1,0 +1,4 @@
+# The theme app extension of the Jasmin app: one app block for the product page.
+# Deployed with `shopify app deploy` (see README.md, "Connect a Shopify store").
+name = "jasmin-personalize"
+type = "theme"

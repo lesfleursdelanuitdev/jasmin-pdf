@@ -238,3 +238,38 @@ JASMIN_E2E=1 pytest tests/test_e2e_browser.py # full browser journey (needs Play
   serve several shops, package the snippet as a theme app extension in a Shopify
   app with OAuth. A cart preview image and an "edit design" link from the cart
   would be nice additions.
+
+## Connect a Shopify store
+
+Jasmin studio connects to one store through a small Shopify app that belongs to that store: the
+**Jasmin app**. It adds a "Personalize button" block to the theme editor, sends new orders to the
+studio and lets the studio tag them. Its definition is in this repository (`shopify.app.toml` and
+`extensions/jasmin-personalize/`); the store's owner creates the app and installs it once.
+
+1. **Create the app.** Signed in as the store's owner, open the Dev Dashboard (from the store admin:
+   Settings > Apps and sales channels > Develop apps), choose **Create app > Start from Dev Dashboard**
+   and name it "Jasmin Studio". Under **App settings**, copy the **Client ID** and the **Client secret**.
+2. **Send it its configuration and the theme block.** On a computer with Node.js, in a copy of this repository:
+
+       npx @shopify/cli@latest app config link --client-id <Client ID>
+       npx @shopify/cli@latest app deploy
+
+   The first command signs you in to Shopify in the browser and writes the Client ID into
+   `shopify.app.toml`. The second releases an app version with the settings from that file (the studio's
+   address, the `read_orders` and `write_orders` permissions, the `orders/create` webhook) and the
+   Personalize button block.
+3. **Allow customer details in orders.** In the Dev Dashboard, open the app's **API access requests**,
+   and under **Protected customer data access** select the data the print orders need (name, email,
+   address). For an app used only by its own store there is no review.
+4. **Install it.** On the app's page in the Dev Dashboard, choose **Install app** and pick the store.
+5. **Tell the studio.** Set `SHOPIFY_SHOP_DOMAIN` (the `...myshopify.com` name), `SHOPIFY_CLIENT_ID`
+   and `SHOPIFY_CLIENT_SECRET` where the studio runs, and `STOREFRONT_ORIGINS` to the shop's public
+   address if it has its own domain (for example `https://www.example.com`), then restart it.
+6. **Add the button.** In the studio's admin, open **Shopify setup**, press **Test the connection**, then
+   **Open the theme editor and add it**, and save the theme. Link each template to its product on the
+   template's page.
+
+The app and the store must belong to the same Shopify organisation, which is the case when the store's
+owner creates the app as above: only then does Shopify give the studio a token for its client id and secret.
+After changing `shopify.app.toml` or the block, run `app deploy` again. The block's script is a copy of
+`static/shopify/jasmin-personalize.js`; a test fails when the two differ.

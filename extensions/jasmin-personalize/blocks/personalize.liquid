@@ -1,0 +1,61 @@
+{%- comment -%}
+  Personalize button. Shown on the product page for products that are linked to a
+  template in Jasmin studio (by product handle); for other products it shows nothing
+  and the normal Add to cart stays. The script is assets/jasmin-personalize.js, a
+  copy of static/shopify/jasmin-personalize.js (a test keeps the two the same).
+{%- endcomment -%}
+{%- assign jasmin_product = block.settings.product | default: product -%}
+{%- assign jasmin_url = block.settings.studio_url | strip -%}
+{%- assign jasmin_last = jasmin_url | slice: -1 -%}
+{%- if jasmin_last == '/' -%}
+  {%- assign jasmin_length = jasmin_url | size | minus: 1 -%}
+  {%- assign jasmin_url = jasmin_url | slice: 0, jasmin_length -%}
+{%- endif -%}
+{%- if jasmin_product and jasmin_url != blank -%}
+  <div
+    class="jasmin-personalize"
+    data-app-url="{{ jasmin_url | escape }}"
+    data-product-handle="{{ jasmin_product.handle | escape }}"
+    data-variant-id="{{ jasmin_product.selected_or_first_available_variant.id }}"
+    data-button-label="{{ block.settings.button_label | default: 'Personalize' | escape }}"
+    data-hide-add-to-cart="{{ block.settings.hide_add_to_cart }}"
+    {{ block.shopify_attributes }}
+  ></div>
+{%- endif -%}
+
+{% schema %}
+{
+  "name": "Personalize button",
+  "target": "section",
+  "javascript": "jasmin-personalize.js",
+  "enabled_on": { "templates": ["product"] },
+  "settings": [
+    {
+      "type": "product",
+      "id": "product",
+      "label": "Product",
+      "autofill": true
+    },
+    {
+      "type": "text",
+      "id": "button_label",
+      "label": "Button text",
+      "default": "Personalize"
+    },
+    {
+      "type": "checkbox",
+      "id": "hide_add_to_cart",
+      "label": "Hide the normal Add to cart button",
+      "info": "Only for products that have a template. Customers then add to cart after approving their proof.",
+      "default": true
+    },
+    {
+      "type": "text",
+      "id": "studio_url",
+      "label": "Jasmin studio address",
+      "info": "Where your Jasmin studio runs. Change it only if the studio moves.",
+      "default": "https://jasmin-studio.lesfleursdelanuit.com"
+    }
+  ]
+}
+{% endschema %}

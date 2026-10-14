@@ -40,8 +40,12 @@ class Settings:
     # Shopify
     shopify_shop_domain: str = ""  # e.g. jasmin-prints.myshopify.com
     shopify_webhook_secret: str = ""
-    shopify_admin_token: str = ""  # optional, enables order tagging
-    shopify_api_version: str = "2025-07"
+    shopify_admin_token: str = ""  # a legacy custom app's token; an app from the Dev Dashboard uses the two below
+    # The Jasmin app in the store's Dev Dashboard (see shopify.app.toml). With these the
+    # app asks Shopify for its own Admin API token, and webhooks are checked against the secret.
+    shopify_client_id: str = ""
+    shopify_client_secret: str = ""
+    shopify_api_version: str = "2026-07"
     # Extra storefront origins allowed to embed the editor (custom domains).
     storefront_origins: list[str] = field(default_factory=list)
     # The /demo-store mock storefront (simulates Shopify locally).
@@ -60,7 +64,8 @@ class Settings:
     def webhook_secret(self) -> str:
         # The demo store signs its fake webhooks with this same secret, so a
         # local default keeps the end-to-end demo working out of the box.
-        return self.shopify_webhook_secret or "local-demo-secret"
+        # Webhooks an app subscribes to in its configuration are signed with the app's client secret.
+        return self.shopify_webhook_secret or self.shopify_client_secret or "local-demo-secret"
 
     @property
     def frame_ancestors(self) -> list[str]:
@@ -90,6 +95,8 @@ def load_settings() -> Settings:
     s.shopify_shop_domain = env.get("SHOPIFY_SHOP_DOMAIN", "").strip()
     s.shopify_webhook_secret = env.get("SHOPIFY_WEBHOOK_SECRET", "").strip()
     s.shopify_admin_token = env.get("SHOPIFY_ADMIN_TOKEN", "").strip()
+    s.shopify_client_id = env.get("SHOPIFY_CLIENT_ID", "").strip()
+    s.shopify_client_secret = env.get("SHOPIFY_CLIENT_SECRET", "").strip()
     s.shopify_api_version = env.get("SHOPIFY_API_VERSION", s.shopify_api_version)
     s.storefront_origins = [
         o.strip().rstrip("/") for o in env.get("STOREFRONT_ORIGINS", "").split(",") if o.strip()

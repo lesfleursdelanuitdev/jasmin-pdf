@@ -1,0 +1,27 @@
+# The Jasmin app for one Shopify store: a custom app made in the store's Dev Dashboard.
+# It gives the store the "Personalize button" theme block (extensions/jasmin-personalize),
+# sends new orders to Jasmin studio, and lets the studio tag those orders.
+# How to set it up: README.md, "Connect a Shopify store".
+
+name = "Jasmin Studio"
+# The app's Client ID from the Dev Dashboard (not a secret). `shopify app config link` fills it in.
+client_id = ""
+application_url = "https://jasmin-studio.lesfleursdelanuit.com"
+embedded = false
+
+[build]
+include_config_on_deploy = true
+
+[access_scopes]
+# read_orders: receive orders/create. write_orders: tag orders (print-ready, in-production, shipped).
+scopes = "read_orders,write_orders"
+
+[auth]
+redirect_urls = ["https://jasmin-studio.lesfleursdelanuit.com/admin"]
+
+[webhooks]
+api_version = "2026-07"
+
+[[webhooks.subscriptions]]
+topics = ["orders/create"]
+uri = "https://jasmin-studio.lesfleursdelanuit.com/webhooks/shopify/orders-create"

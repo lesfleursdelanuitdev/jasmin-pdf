@@ -49,15 +49,17 @@ def create_app(
     settings: Settings | None = None,
     storage: Storage | None = None,
     auth_transport: httpx.BaseTransport | None = None,
+    shopify_transport: httpx.BaseTransport | None = None,
 ) -> FastAPI:
     settings = settings or load_settings()
     svc = Services(settings, storage)
     auth = AdminAuth(settings, auth_transport, svc.db)
-    shop_admin = shopify.ShopifyAdmin(settings)
+    shop_admin = shopify.ShopifyAdmin(settings, shopify_transport)
     app = FastAPI(title="Jasmin PDF", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.services = svc
     app.state.settings = settings
     app.state.auth = auth
+    app.state.shop_admin = shop_admin
     backups = Backups(svc, settings.backup_dir or settings.data_dir / "backups", settings.backup_keep)
     app.state.backups = backups
     schedule = Scheduler(backups, settings.backup_hour) if settings.backup_auto else None
@@ -456,16 +458,24 @@ def create_app(
 
     @app.get("/admin/api/shopify", dependencies=admin)
     def shopify_settings():
+        ready = bool(settings.shopify_shop_domain and settings.shopify_client_id)
         return {
             "appUrl": settings.app_url,
             "webhookUrl": f"{settings.app_url}/webhooks/shopify/orders-create",
             "shopDomain": settings.shopify_shop_domain,
-            "webhookSecretConfigured": bool(settings.shopify_webhook_secret),
+            "appConfigured": bool(settings.shopify_client_id and settings.shopify_client_secret),
+            "webhookSecretConfigured": bool(settings.shopify_webhook_secret or settings.shopify_client_secret),
             "adminApiConfigured": shop_admin.enabled,
+            # The theme editor, opened on the product page with the Personalize button ready to place.
+            "addBlockUrl": shopify.add_block_url(settings.shopify_shop_domain, settings.shopify_client_id) if ready else None,
             "frameAncestors": settings.frame_ancestors,
             "snippet": shopify.liquid_snippet(settings.app_url),
             "demoStore": settings.demo_store,
         }
+
+    @app.post("/admin/api/shopify/check", dependencies=admin)
+    def shopify_check():
+        return shop_admin.check()
 
     if settings.demo_store:
         demo_store.register(app, svc, settings)
