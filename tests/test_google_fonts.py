@@ -69,6 +69,13 @@ def test_search_puts_the_most_used_first_and_names_that_start_with_the_query_bef
     assert g.search("  MONT ")["families"][0]["styles"] == [
         {"id": "400", "label": "Regular"}, {"id": "500", "label": "Medium"}, {"id": "700", "label": "Bold"}, {"id": "400i", "label": "Italic"},
     ]
+    # By kind, by style, or by several words at once; a name that has the query still comes first.
+    assert [f["family"] for f in g.search("serif")["families"]] == ["Montserrat", "Cormorant Garamond"]
+    assert [f["family"] for f in g.search("handwriting")["families"]] == ["Great Vibes"]
+    assert [f["family"] for f in g.search("italic")["families"]] == ["Montserrat"]
+    assert [f["family"] for f in g.search("serif semibold")["families"]] == ["Cormorant Garamond"]
+    assert [f["family"] for f in g.search("sans mont bold")["families"]] == ["Montserrat"]
+    assert g.search("serif zzz")["total"] == 0
     assert g.search(limit=2)["total"] == 4 and g.categories() == ["Display", "Handwriting", "Sans Serif", "Serif"]
     assert len(fake.calls) == 1  # the catalogue is fetched once and kept
     fake.down = True

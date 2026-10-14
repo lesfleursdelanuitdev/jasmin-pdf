@@ -668,15 +668,45 @@ async function fontsView() {
 const GF_SAMPLE = "Emma & James · Saturday, June 13";
 
 function googleFontsCard() {
-  const search = h("input", { type: "search", placeholder: "Search by name, e.g. Playfair", "aria-label": "Search Google Fonts", autocomplete: "off" });
-  const category = h("select", { "aria-label": "Kind of font" }, [h("option", { value: "", text: "All kinds" })]);
-  const results = h("div", { class: "gf-results", "aria-live": "polite" });
-  const previews = h("div", { hidden: true });
+  const search = h("input", {
+    type: "search",
+    id: "gf-search",
+    role: "combobox",
+    placeholder: "Type a name or a style, e.g. Playfair, handwriting, serif bold",
+    autocomplete: "off",
+    "aria-expanded": "false",
+    "aria-controls": "gf-list",
+    "aria-autocomplete": "list",
+  });
+  const list = h("ul", { class: "gf-list", id: "gf-list", role: "listbox", "aria-label": "Google Fonts", hidden: true });
+  const chosen = h("div", { class: "gf-chosen", "aria-live": "polite" });
   let asked = 0;
+  let families = [];
+  let active = -1;
 
-  function familyRow(f) {
+  function close() {
+    list.hidden = true;
+    active = -1;
+    search.setAttribute("aria-expanded", "false");
+    search.removeAttribute("aria-activedescendant");
+  }
+
+  function mark(index) {
+    active = index;
+    [...list.children].forEach((li, i) => {
+      li.classList.toggle("is-active", i === index);
+      if (i === index) {
+        search.setAttribute("aria-activedescendant", li.id);
+        li.scrollIntoView({ block: "nearest" });
+      }
+    });
+  }
+
+  function choose(f) {
+    close();
+    search.value = f.family;
     const boxes = f.styles.map((s) => {
-      const box = h("input", { type: "checkbox", value: s.id, disabled: s.installed, checked: s.installed || (s.id === "400" && !s.installed) });
+      const box = h("input", { type: "checkbox", value: s.id, disabled: s.installed, checked: s.installed || s.id === "400" });
       return h("label", { class: `gf-style${s.installed ? " is-installed" : ""}`, title: s.installed ? "Already in the studio" : "" }, [box, s.label]);
     });
     // A family that has no Regular at all: its first style that is not there yet is the one ticked.
@@ -685,7 +715,7 @@ function googleFontsCard() {
       if (first) first.firstChild.checked = true;
     }
     const allIn = f.styles.every((s) => s.installed);
-    const add = h("button", { class: "btn btn-primary btn-small", type: "button", text: allIn ? "In the studio" : "Add to studio", disabled: allIn });
+    const add = h("button", { class: "btn btn-primary", type: "button", text: allIn ? "In the studio" : "Add to studio", disabled: allIn });
     add.addEventListener("click", async () => {
       const styles = boxes.map((b) => b.firstChild).filter((b) => b.checked && !b.disabled).map((b) => b.value);
       if (!styles.length) return toast("Tick at least one style to add.", true);
@@ -693,8 +723,7 @@ function googleFontsCard() {
       add.textContent = "Adding…";
       try {
         const out = await api("POST", "/admin/api/google-fonts", { family: f.family, styles });
-        const n = out.added.length;
-        toast(n ? `Added ${f.family}: ${out.added.map((a) => a.style).join(", ")}` : `${f.family} was already in the studio.`);
+        toast(out.added.length ? `Added ${f.family}: ${out.added.map((a) => a.style).join(", ")}` : `${f.family} was already in the studio.`);
         fontsView();
       } catch (err) {
         toast(err.message, true);
@@ -702,50 +731,86 @@ function googleFontsCard() {
         add.textContent = "Add to studio";
       }
     });
-    // The sample is drawn with Google's own copy of the font, cut down to the letters shown.
-    previews.append(
+    chosen.replaceChildren(
+      // The sample is drawn with Google's own copy of the font, cut down to the letters shown.
       h("link", { rel: "stylesheet", href: `https://fonts.googleapis.com/css2?family=${encodeURIComponent(f.family)}&text=${encodeURIComponent(GF_SAMPLE)}&display=swap` }),
-    );
-    return h("div", { class: "gf-family" }, [
       h("div", { class: "gf-head" }, [h("strong", { text: f.family }), h("span", { class: "small muted", text: f.category })]),
       h("div", { class: "font-sample", style: `font-family:"${f.family.replace(/"/g, "")}", sans-serif`, text: GF_SAMPLE }),
       h("div", { class: "gf-styles" }, boxes),
       add,
-    ]);
+    );
+  }
+
+  function show(out) {
+    families = out.families;
+    const more = out.total - families.length;
+    list.replaceChildren(
+      ...families.map((f, i) => {
+        const n = f.styles.length;
+        const li = h("li", { role: "option", id: `gf-opt-${i}`, "aria-selected": "false" }, [
+          h("span", { class: "gf-name", text: f.family }),
+          h("span", { class: "small muted", text: `${f.category} · ${n} style${n === 1 ? "" : "s"}` }),
+        ]);
+        // mousedown, not click: the choice is made before the box loses the cursor and the list closes.
+        li.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          choose(f);
+        });
+        return li;
+      }),
+      !families.length && h("li", { class: "gf-note", text: "No font matches that. Check the spelling, or try part of the name." }),
+      more > 0 && h("li", { class: "gf-note", text: `${more} more match. Type more to narrow it down.` }),
+    );
+    list.hidden = false;
+    list.scrollTop = 0;
+    active = -1;
+    search.setAttribute("aria-expanded", "true");
   }
 
   async function load() {
     const mine = ++asked;
     try {
-      const out = await api("GET", `/admin/api/google-fonts?q=${encodeURIComponent(search.value)}&category=${encodeURIComponent(category.value)}`);
-      if (mine !== asked) return; // a newer search has been started since
-      if (category.options.length === 1) out.categories.forEach((c) => category.append(h("option", { value: c, text: c })));
-      previews.replaceChildren();
-      const more = out.total - out.families.length;
-      results.replaceChildren(
-        ...(out.families.length
-          ? out.families.map(familyRow)
-          : [h("p", { class: "muted", text: "No font on Google Fonts matches that. Check the spelling, or try part of the name." })]),
-        more > 0 && h("p", { class: "muted small", text: `${more} more match. Type more of the name to narrow it down.` }),
-      );
+      const out = await api("GET", `/admin/api/google-fonts?q=${encodeURIComponent(search.value)}`);
+      if (mine === asked && document.activeElement === search) show(out); // not if a newer search was started, or she has moved on
     } catch (err) {
-      if (mine === asked) results.replaceChildren(h("p", { class: "notice notice-warn", text: err.message }));
+      if (mine !== asked) return;
+      close();
+      chosen.replaceChildren(h("p", { class: "notice notice-warn", text: err.message }));
     }
   }
 
   let timer;
   search.addEventListener("input", () => {
     clearTimeout(timer);
-    timer = setTimeout(load, 250);
+    timer = setTimeout(load, 200);
   });
-  category.addEventListener("change", load);
-  load();
+  search.addEventListener("focus", load);
+  // Closed with Escape while the cursor stayed in the box: a click opens it again.
+  search.addEventListener("click", () => {
+    if (list.hidden) load();
+  });
+  search.addEventListener("blur", () => {
+    asked++;
+    close();
+  });
+  search.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !list.hidden) {
+      e.preventDefault();
+      close();
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (list.hidden) return load();
+      if (families.length) mark((active + (e.key === "ArrowDown" ? 1 : families.length - 1) + (active < 0 && e.key === "ArrowUp" ? 1 : 0)) % families.length);
+    } else if (e.key === "Enter" && !list.hidden && families.length) {
+      e.preventDefault();
+      choose(families[Math.max(active, 0)]);
+    }
+  });
   return h("div", { class: "card" }, [
     h("h2", { text: "Add from Google Fonts" }),
-    h("p", { class: "muted small", text: "Free fonts that may be used in print and on the web. Find one, tick the styles you want (Regular, Bold, Italic…), and add them. Each style is a font of its own in a template." }),
-    h("div", { class: "gf-search" }, [search, category]),
-    results,
-    previews,
+    h("label", { class: "gf-label", for: "gf-search", text: "Find a free font by name or by style" }),
+    h("div", { class: "gf-combo" }, [search, list]),
+    chosen,
   ]);
 }
 

@@ -109,7 +109,7 @@ def router(studio: Studio) -> APIRouter:
     @r.get("/google-fonts")
     def google_fonts(q: str = "", category: str = ""):
         have = {(f.family.lower(), f.style.replace(" ", "").lower()) for f in svc.fonts.all()}
-        found = studio.google.search(q[:80], category[:40])
+        found = studio.google.search(q[:80], category[:40], limit=40)
         for family in found["families"]:
             for style in family["styles"]:
                 style["installed"] = (family["family"].lower(), style["label"].replace(" ", "").lower()) in have

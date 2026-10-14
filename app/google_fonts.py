@@ -92,11 +92,21 @@ class GoogleFonts:
         return sorted({f["category"] for f in self.families() if f["category"]})
 
     def search(self, query: str = "", category: str = "", limit: int = 12) -> dict:
-        """The most used families first; with a query, those whose name starts with it come before those that contain it."""
+        """Families whose name, kind (Serif, Handwriting...) or styles (Bold, Italic...) have every word asked for.
+
+        The most used come first; those whose name starts with the query come before the rest.
+        """
         q = re.sub(r"\s+", " ", query).strip().lower()
-        found = [f for f in self.families() if (not category or f["category"] == category) and q in f["family"].lower()]
+        words = q.split()
+
+        def matches(f: dict) -> bool:
+            name, kind = f["family"].lower(), f["category"].lower()
+            labels = [s["label"].lower() for s in f["styles"]]
+            return all(w in name or w in kind or any(w in label for label in labels) for w in words)
+
+        found = [f for f in self.families() if (not category or f["category"] == category) and matches(f)]
         if q:
-            found.sort(key=lambda f: (not f["family"].lower().startswith(q), f["popularity"]))
+            found.sort(key=lambda f: (not f["family"].lower().startswith(q), q not in f["family"].lower(), f["popularity"]))
         return {"total": len(found), "families": [{k: f[k] for k in ("family", "category", "styles")} for f in found[:limit]]}
 
     def family(self, name: str) -> dict:
