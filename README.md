@@ -191,7 +191,7 @@ your URLs filled in.
 | `POST /api/designs/{id}/approve` | Lock the design and freeze the template version it used |
 | `GET /api/storefront/products/{handle}` | Which template a Shopify product uses (CORS-open) |
 | `POST /webhooks/shopify/orders-create` | Shopify order webhook (HMAC verified) |
-| `/admin/api/...` | Templates, fonts, orders, print files (HTTP Basic auth) |
+| `/admin/api/...` | Templates, fonts (upload or Google Fonts), orders, print files, backups, accounts (Supabase sign-in, or HTTP Basic) |
 
 Approved designs keep a snapshot of the template, so editing a template later
 never changes what an existing order prints.
@@ -205,20 +205,43 @@ app/
   pdf/render.py      preview assets, validation, print PDF (reportlab + pikepdf + pypdfium2)
   layout.py          text fitting & photo placement (mirrored in static/js/layout.js)
   fonts.py           font library, PDF font-name matching, advance tables
-  services.py        templates, uploads, designs, orders (SQLite + files in data/)
-  shopify.py         webhook verification, Liquid snippet, Admin API tagging
+  google_fonts.py    search Google Fonts and fetch a style as a TrueType file
+  services.py        templates, uploads, designs, orders, housekeeping
+  db.py              SQLite or Postgres behind one interface; table list, numbered migrations, transactions
+  storage.py         the only code that builds paths to stored files; data directory, or Supabase Storage behind it
+  jobs.py            jobs table + one worker (print files); survives a restart, retries, one job per order
+  auth.py            admin sign-in (Supabase Auth) and admin accounts
+  backup.py          backups (zip of database + files), daily schedule, restore
+  shopify.py         webhook verification, Admin API tagging, app set-up
+  config.py          settings from the environment; describe() names the modes and refuses unsafe ones
+  routes/            pages, public (editor API), webhooks, admin: one router each
+  main.py / asgi.py  makes the parts and puts them together
   demo_store.py      local mock storefront
-  main.py / asgi.py  FastAPI app
-static/              editor, admin studio, storefront snippet (vanilla JS, no build step)
+static/              editor, admin studio, storefront script (vanilla JS, no build step)
+extensions/          Shopify theme app extension (the Personalize button)
+scripts/             seed, backup, cleanup, copy_data (SQLite + files -> Postgres + Supabase)
 samples/             sample layered invitation + photos (regenerate: python samples/make_samples.py)
 fonts/               bundled OFL fonts
 tests/               pytest suite (+ opt-in Playwright journey)
+requirements.lock    every package pinned; the image is built from it
 ```
+
+Rules the code keeps to (tests check the first two):
+
+* A file in the data directory is reached through `storage` (`path`, `writing`, `write`,
+  `remove`...), never by building a path. Reading fetches it if it is only in the bucket;
+  writing stores it.
+* Every table is listed in `db.TABLES` (backed up, copied, locked down) or
+  `db.INTERNAL_TABLES` (locked down only). A change to the database is a new entry in
+  `db.MIGRATIONS`.
+* Work that outlasts a request is a job (`jobs.enqueue`), not a thread.
 
 ## Tests
 
 ```bash
+pip install -r requirements.lock -r requirements-dev.txt
 pytest                                        # unit + API + rendering + JS/Python layout parity
+JASMIN_TEST_DATABASE_URL=postgresql://... pytest   # the same suite on Postgres
 JASMIN_E2E=1 pytest tests/test_e2e_browser.py # full browser journey (needs Playwright + Chromium)
 ```
 
@@ -231,9 +254,10 @@ JASMIN_E2E=1 pytest tests/test_e2e_browser.py # full browser journey (needs Play
   (static artwork keeps its spot colours untouched).
 * **Photos**: JPEG/PNG/WebP (no HEIC yet), no rotate/filters. Embedded as RGB;
   convert to the printer's CMYK profile in the RIP, or add a conversion step.
-* **Infrastructure**: SQLite and local disk (`data/`); for production, move files
-  to object storage, render in a job queue, add upload clean-up and rate limiting,
-  and put the admin behind real auth.
+* **Infrastructure**: runs on SQLite and local disk out of the box, or on Postgres,
+  Supabase Storage and Supabase Auth (see `app/config.py`). Print files are made by a
+  job worker in the app's own process; proofs are still rendered inside the request
+  (at most two at a time).
 * **Shopify**: the Custom Liquid approach suits a single shop. To list the app or
   serve several shops, package the snippet as a theme app extension in a Shopify
   app with OAuth. A cart preview image and an "edit design" link from the cart
