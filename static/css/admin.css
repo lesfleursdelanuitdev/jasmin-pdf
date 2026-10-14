@@ -570,6 +570,7 @@ pre {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
 }
 
@@ -772,6 +773,8 @@ pre {
 @media (max-width: 760px) {
   .admin {
     grid-template-columns: minmax(0, 1fr);
+    /* The bar keeps its own height; on a short page the space left over goes to the page, not the bar. */
+    grid-template-rows: auto 1fr;
   }
 
   /* A slim bar with the name and a Menu button; the menu itself folds out under it. */
@@ -895,6 +898,10 @@ pre {
 
   .item-actions {
     justify-content: flex-start;
+  }
+
+  .form-grid input[type="color"] {
+    min-height: 44px;
   }
 
   .kv {

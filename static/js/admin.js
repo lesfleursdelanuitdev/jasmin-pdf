@@ -107,7 +107,13 @@ async function route() {
       try {
         await fn(m);
       } catch (err) {
-        render(h("div", { class: "notice notice-bad", text: err.message }));
+        // Say what could not be shown, and give a way on.
+        const what = { templates: "template", orders: "order" }[section];
+        const message = err.status === 404 && what ? `This ${what} does not exist (any more).` : err.message;
+        render(
+          h("div", { class: "notice notice-bad", role: "alert", text: message }),
+          h("p", {}, [h("a", { class: "btn", href: `#/${what ? section : "templates"}`, text: what ? `Back to ${section}` : "Back to templates" })]),
+        );
       }
       view.focus();
       return;
@@ -681,6 +687,7 @@ function googleFontsCard() {
   const list = h("ul", { class: "gf-list", id: "gf-list", role: "listbox", "aria-label": "Google Fonts", hidden: true });
   const chosen = h("div", { class: "gf-chosen", "aria-live": "polite" });
   let asked = 0;
+  let loading = 0;
   let families = [];
   let active = -1;
 
@@ -769,6 +776,7 @@ function googleFontsCard() {
 
   async function load() {
     const mine = ++asked;
+    loading++;
     try {
       const out = await api("GET", `/admin/api/google-fonts?q=${encodeURIComponent(search.value)}`);
       if (mine === asked && document.activeElement === search) show(out); // not if a newer search was started, or she has moved on
@@ -776,6 +784,8 @@ function googleFontsCard() {
       if (mine !== asked) return;
       close();
       chosen.replaceChildren(h("p", { class: "notice notice-warn", text: err.message }));
+    } finally {
+      loading--;
     }
   }
 
@@ -787,7 +797,7 @@ function googleFontsCard() {
   search.addEventListener("focus", load);
   // Closed with Escape while the cursor stayed in the box: a click opens it again.
   search.addEventListener("click", () => {
-    if (list.hidden) load();
+    if (list.hidden && !loading) load();
   });
   search.addEventListener("blur", () => {
     asked++;
@@ -852,7 +862,7 @@ async function orderView(id) {
   const o = await api("GET", `/admin/api/orders/${encodeURIComponent(id)}`);
   const statusSelect = h(
     "select",
-    { style: "width:auto" },
+    { style: "width:auto", "aria-label": "Order status" },
     [["received", "Received"], ["in_production", "In production"], ["shipped", "Shipped"]].map(([v, l]) =>
       h("option", { value: v, text: l, selected: o.status === v }),
     ),

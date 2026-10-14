@@ -750,12 +750,37 @@ async function restoreDesign() {
 // ---------------------------------------------------------------------------
 // Proof & approval
 // ---------------------------------------------------------------------------
+// The proof is a dialog: the keyboard goes into it when it opens, stays in it while it
+// is open, and goes back to where it was when it closes.
+let modalOpener = null;
 function openModal() {
-  $("#proof-modal").hidden = false;
+  const modal = $("#proof-modal");
+  if (modal.hidden) modalOpener = document.activeElement;
+  modal.hidden = false;
+  $("#proof-modal .modal-card").focus();
 }
 
 function closeModal() {
   $("#proof-modal").hidden = true;
+  if (modalOpener && document.contains(modalOpener)) modalOpener.focus();
+  modalOpener = null;
+}
+
+function keepFocusInModal(e) {
+  const modal = $("#proof-modal");
+  if (e.key !== "Tab" || modal.hidden) return;
+  const stops = [...modal.querySelectorAll("button, a[href], input, [tabindex]:not([tabindex='-1'])")].filter((el) => !el.disabled && el.offsetParent !== null);
+  if (!stops.length) return e.preventDefault();
+  const first = stops[0];
+  const last = stops[stops.length - 1];
+  const inside = modal.contains(document.activeElement) && document.activeElement !== $("#proof-modal .modal-card");
+  if (e.shiftKey && (!inside || document.activeElement === first)) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && (!inside || document.activeElement === last)) {
+    e.preventDefault();
+    first.focus();
+  }
 }
 
 function proofFigure(url, page, caption) {
@@ -930,6 +955,7 @@ async function boot() {
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !$("#proof-modal").hidden) closeModal();
+    keepFocusInModal(e);
   });
   $("#file-input").addEventListener("change", (e) => {
     const file = e.target.files?.[0];

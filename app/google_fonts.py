@@ -51,7 +51,10 @@ class GoogleFonts:
         try:
             # No browser is named: Google then answers with TrueType files, which is what printing needs.
             with httpx.Client(transport=self.transport, timeout=20.0, headers={"User-Agent": "jasmin-studio"}) as client:
-                response = client.get(url, **kw)
+                try:
+                    response = client.get(url, **kw)
+                except httpx.TransportError:  # a connection that did not come up: once more before giving up
+                    response = client.get(url, **kw)
         except httpx.HTTPError as exc:
             raise GoogleFontsError("Google Fonts cannot be reached right now. Try again in a moment.") from exc
         if response.status_code == 400:

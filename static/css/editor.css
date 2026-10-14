@@ -684,6 +684,25 @@ body {
     padding-right: 22px;
   }
 
+  /* The small text buttons and the zoom slider get a full-size area to tap. */
+  .btn-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  .photo-actions {
+    gap: 0;
+  }
+
+  .zoom-row {
+    margin-top: 0;
+  }
+
+  .zoom-row input[type="range"] {
+    height: 44px;
+  }
+
   /* 16px keeps iPhones from zooming the page when a field is tapped. */
   input[type="text"],
   textarea {
@@ -816,3 +835,8 @@ body {
   }
 }
 
+
+/* The proof takes the keyboard when it opens; it is not itself something to act on. */
+.modal-card:focus {
+  outline: none;
+}
