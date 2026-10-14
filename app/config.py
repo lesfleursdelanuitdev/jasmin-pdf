@@ -58,6 +58,8 @@ class Settings:
     backup_dir: Path | None = None
     backup_keep: int = 14
     backup_auto: bool = False
+    # At start, make the print files that were still pending when the app last stopped.
+    resume_print_work: bool = False
     backup_hour: int = 3
 
     @property
@@ -65,7 +67,15 @@ class Settings:
         # The demo store signs its fake webhooks with this same secret, so a
         # local default keeps the end-to-end demo working out of the box.
         # Webhooks an app subscribes to in its configuration are signed with the app's client secret.
-        return self.shopify_webhook_secret or self.shopify_client_secret or "local-demo-secret"
+        return self.webhook_secrets[0]
+
+    @property
+    def webhook_secrets(self) -> list[str]:
+        """Every secret an incoming webhook may be signed with; the first one signs the demo store's own."""
+        # Both may be set: a webhook made by hand in the store's settings has its own secret, one the
+        # app subscribes to is signed with the app's client secret.
+        secrets_ = [s for s in (self.shopify_webhook_secret, self.shopify_client_secret) if s]
+        return secrets_ or ["local-demo-secret"]
 
     @property
     def frame_ancestors(self) -> list[str]:
@@ -109,6 +119,7 @@ def load_settings() -> Settings:
     if env.get("BACKUP_KEEP"):
         s.backup_keep = max(1, int(env["BACKUP_KEEP"]))
     s.backup_auto = _bool(env.get("BACKUP_AUTO"), False)
+    s.resume_print_work = _bool(env.get("RESUME_PRINT_WORK"), True)
     if env.get("BACKUP_HOUR_UTC"):
         s.backup_hour = min(max(int(env["BACKUP_HOUR_UTC"]), 0), 23)
     return s

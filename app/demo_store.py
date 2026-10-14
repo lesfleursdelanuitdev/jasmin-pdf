@@ -18,12 +18,14 @@ from urllib.parse import quote
 import httpx
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from starlette.concurrency import run_in_threadpool
 
 from . import shopify
 from .config import Settings
 from .services import NotFound, Services
 
 COOKIE = "jasmin_demo_cart"
+MAX_CARTS = 2000
 VARIANTS = [("matte", "Matte 350gsm", 3.50), ("cotton", "Cotton 600gsm", 4.75)]
 SHOP_DOMAIN = "jasmin-demo.myshopify.com"
 
@@ -72,6 +74,9 @@ def register(app: FastAPI, svc: Services, settings: Settings) -> None:
         if not cid or cid not in carts:
             cid = secrets.token_urlsafe(12)
             carts[cid] = []
+            # Every visitor without a cookie gets a cart (crawlers too): the oldest go when there are many.
+            while len(carts) > MAX_CARTS:
+                carts.pop(next(iter(carts)))
         return cid, carts[cid]
 
     def respond(content: str, cid: str, status: int = 200) -> HTMLResponse:
@@ -246,7 +251,7 @@ def register(app: FastAPI, svc: Services, settings: Settings) -> None:
         cid, cart = cart_of(request)
         if not cart:
             return RedirectResponse("/demo-store/cart", status_code=303)
-        count = svc.db.one("SELECT COUNT(*) AS n FROM orders WHERE source='demo'")["n"]
+        count = (await run_in_threadpool(svc.db.one, "SELECT COUNT(*) AS n FROM orders WHERE source='demo'"))["n"]
         order_id = str(random.randint(5_000_000_000_000, 5_999_999_999_999))
         first, _, last = name.strip().partition(" ")
         address = {"name": name, "address1": address1, "city": city, "zip": zip, "country": country}
@@ -297,6 +302,9 @@ def register(app: FastAPI, svc: Services, settings: Settings) -> None:
         try:
             order = svc.get_order(order_id)
         except NotFound:
+            order = None
+        # Only the demo's own orders: a real order's number must not open its details here.
+        if order is not None and order.get("source") != "demo":
             order = None
         if order is None:
             body = (

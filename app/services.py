@@ -9,6 +9,8 @@ import math
 import re
 import secrets
 import shutil
+import threading
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +26,12 @@ from .storage import Storage, open_storage
 log = logging.getLogger("jasmin")
 
 MAX_UPLOAD_BYTES = 30 * 1024 * 1024
+# A photo is decoded in memory at four bytes a pixel and more than once, so its pixel count
+# is bounded too: a small file can claim an enormous canvas. 64 megapixels is above what
+# phone and consumer cameras produce.
+MAX_UPLOAD_PIXELS = 64_000_000
+UPLOAD_FORMATS = ["JPEG", "PNG", "WEBP"]
+Image.MAX_IMAGE_PIXELS = MAX_UPLOAD_PIXELS
 MAX_PDF_BYTES = 50 * 1024 * 1024  # the storage bucket takes files up to 50 MB
 PREVIEW_EDGE = 1600
 PROOF_DPI = 110
@@ -135,6 +143,7 @@ class Services:
         self.db = open_database(data / "jasmin.db", settings.database_url, settings.database_url_unpooled)
         # The store of record for everything under data (see app/storage.py).
         self.storage = storage or open_storage(settings)
+        self._upload_lock = threading.Lock()
         if self.storage.remote:
             self.storage.ensure_bucket()
             self.storage.sync_down("fonts")
@@ -246,6 +255,8 @@ class Services:
         if rebuild or not self.storage.ensure_tree(self._assets_key(template_id, t["revision"])):
             definition["stacks"] = self._build_assets(template_id, revision, definition, self.pdf_path(t))
         else:
+            # A save that failed half-way may have left this revision's folder behind.
+            shutil.rmtree(self.assets_dir(template_id, revision), ignore_errors=True)
             shutil.copytree(self.assets_dir(template_id, t["revision"]), self.assets_dir(template_id, revision))
             self.storage.put_tree(self._assets_key(template_id, revision))
         self.db.execute(
@@ -321,13 +332,26 @@ class Services:
     def save_upload(self, filename: str, data: bytes) -> dict:
         if len(data) > MAX_UPLOAD_BYTES:
             raise Invalid("Photos must be smaller than 30 MB.")
+        too_large = "That photo is too large (more than 64 megapixels). Please upload a smaller version of it."
+        # One photo is decoded at a time: several large ones at once would not fit in memory.
+        with self._upload_lock:
+            return self._save_upload(filename, data, too_large)
+
+    def _save_upload(self, filename: str, data: bytes, too_large: str) -> dict:
         try:
-            with Image.open(io.BytesIO(data)) as probe:
-                probe.verify()
-            img = Image.open(io.BytesIO(data))
-            img = ImageOps.exif_transpose(img)
-            img.load()
-        except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                # The size is read from the header here; nothing is decoded until load().
+                with Image.open(io.BytesIO(data), formats=UPLOAD_FORMATS) as probe:
+                    if probe.width * probe.height > MAX_UPLOAD_PIXELS:
+                        raise Invalid(too_large)
+                    probe.verify()
+                img = Image.open(io.BytesIO(data), formats=UPLOAD_FORMATS)
+                img = ImageOps.exif_transpose(img)
+                img.load()
+        except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+            raise Invalid(too_large) from exc
+        except (UnidentifiedImageError, OSError) as exc:
             raise Invalid("That file is not a supported image (use JPEG, PNG or WebP).") from exc
         if min(img.size) < 32:
             raise Invalid("That image is too small.")
@@ -341,8 +365,8 @@ class Services:
             img = img.convert("RGB")
             path = self.dirs["uploads"] / f"{uid}.jpg"
             img.save(path, quality=95, subsampling=0)
-        preview = img.copy()
-        preview.thumbnail((PREVIEW_EDGE, PREVIEW_EDGE), Image.LANCZOS)
+        # Scaled straight from the photo: no second full-size copy is made for it.
+        preview = img if max(img.size) <= PREVIEW_EDGE else ImageOps.contain(img, (PREVIEW_EDGE, PREVIEW_EDGE), Image.LANCZOS)
         preview_path = self.dirs["uploads"] / f"{uid}-preview.jpg"
         preview.convert("RGB").save(preview_path, quality=85)
         self.storage.put(f"uploads/{path.name}")
@@ -596,7 +620,7 @@ class Services:
                 (f"{folder.name}/{filename}", item_id),
             )
             self.db.execute("UPDATE designs SET status='ordered', updated_at=? WHERE id=?", (now(), d["id"]))
-        except (NotFound, Invalid, FontError, OSError) as exc:
+        except Exception as exc:  # whatever it was, the item must say so and not stay "pending" for ever
             log.exception("print file for item %s failed", item_id)
             self.db.execute("UPDATE order_items SET status='error', error=? WHERE id=?", (str(exc), item_id))
         return self.db.one("SELECT * FROM order_items WHERE id=?", (item_id,))  # type: ignore[return-value]
@@ -609,6 +633,10 @@ class Services:
         for item in items:
             item["thumbnailUrl"] = f"/api/designs/{item['design_id']}/thumbnail.jpg" if item["design_id"] else None
         return order
+
+    def pending_orders(self) -> list[str]:
+        """Orders with an item whose print file was never made (the app stopped while it was being rendered)."""
+        return [r["order_id"] for r in self.db.all("SELECT DISTINCT order_id FROM order_items WHERE status='pending'")]
 
     def get_order(self, order_id: str) -> dict:
         order = self.db.one("SELECT * FROM orders WHERE id=?", (order_id,))

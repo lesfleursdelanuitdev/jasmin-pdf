@@ -1,5 +1,7 @@
 import json
 
+from fastapi.testclient import TestClient
+
 from app.shopify import sign
 
 from .conftest import PHOTOS
@@ -187,3 +189,111 @@ def test_demo_store_checkout(client, admin, template):
     assert resp.status_code == 303
     orders = admin.get("/admin/api/orders").json()
     assert len(orders) == 1 and orders[0]["source"] == "demo" and orders[0]["items"][0]["status"] == "ready"
+
+
+# -- hardening -----------------------------------------------------------------
+def _png(width: int, height: int) -> bytes:
+    """A valid, tiny PNG file that claims a canvas of width x height (all black)."""
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    comp = zlib.compressobj(9)
+    row = b"\x00" * (1 + width * 3)
+    body = b"".join(comp.compress(row) for _ in range(height)) + comp.flush()
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) + chunk(b"IDAT", body) + chunk(b"IEND", b"")
+
+
+def test_a_small_file_that_claims_a_huge_canvas_is_refused_before_it_is_decoded(client, svc):
+    bomb = _png(13000, 13000)  # under 1 MB as a file, about half a gigabyte once decoded
+    assert len(bomb) < 1_000_000
+    r = client.post("/api/uploads", files={"file": ("big.png", bomb, "image/png")})
+    assert r.status_code == 422 and "too large" in r.json()["detail"]
+    assert svc.db.one("SELECT COUNT(*) AS n FROM uploads")["n"] == 0
+    # A large but ordinary photo is still accepted.
+    ok = client.post("/api/uploads", files={"file": ("ok.png", _png(3000, 2000), "image/png")})
+    assert ok.status_code == 200 and ok.json()["width"] == 3000
+
+
+def test_only_jpeg_png_and_webp_are_decoded(client):
+    import io
+
+    from PIL import Image
+
+    for fmt in ("TIFF", "BMP", "GIF"):
+        buf = io.BytesIO()
+        Image.new("RGB", (200, 200), "red").save(buf, fmt)
+        r = client.post("/api/uploads", files={"file": (f"x.{fmt.lower()}", buf.getvalue(), "application/octet-stream")})
+        assert r.status_code == 422 and "not a supported image" in r.json()["detail"], fmt
+
+
+def test_a_webhook_is_accepted_under_either_configured_secret(tmp_path):
+    """A store connected through the app signs with the client secret, also when an older webhook secret is still set."""
+    import json as _json
+
+    from app.config import Settings
+    from app.main import create_app
+
+    app = create_app(Settings(data_dir=tmp_path / "d", shopify_webhook_secret="old-hand-made", shopify_client_secret="app-secret"))
+    c = TestClient(app)
+    body = _json.dumps({"id": 1, "line_items": []}).encode()
+    for secret, want in (("app-secret", 200), ("old-hand-made", 200), ("local-demo-secret", 401), ("nope", 401)):
+        r = c.post("/webhooks/shopify/orders-create", content=body, headers={"X-Shopify-Hmac-Sha256": sign(body, secret)})
+        assert r.status_code == want, secret
+    app.state.services.db.close()
+
+
+def test_a_failed_template_save_does_not_block_the_next_one(svc, template):
+    """A revision folder left behind by a save that failed half-way is replaced, not tripped over."""
+    stale = svc.assets_dir(template["id"], template["revision"] + 1)
+    stale.mkdir(parents=True)
+    (stale / "leftover.txt").write_text("from a save that failed")
+    t = svc.update_template(template["id"], {"name": "Renamed"})
+    assert t["name"] == "Renamed" and t["revision"] == template["revision"] + 1
+    assert not (stale / "leftover.txt").exists() and (stale / "p0-original.jpg").exists()
+
+
+def test_a_print_file_that_cannot_be_made_says_so_whatever_went_wrong(client, svc, template, monkeypatch):
+    design = approved_design(client)
+    svc.record_order(order_payload(design["id"]), source="demo")
+    item = svc.db.one("SELECT * FROM order_items")
+    monkeypatch.setattr(svc, "_render", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("renderer fell over")))
+    after = svc.generate_print_file(item["id"])
+    assert after["status"] == "error" and "renderer fell over" in after["error"]
+
+
+def test_print_files_left_pending_are_made_when_the_app_starts(client, svc, template, settings):
+    """As after a restart in the middle of rendering: the order is there, its print file is not."""
+    import time
+
+    from app.main import create_app
+
+    design = approved_design(client)
+    svc.record_order(order_payload(design["id"]), source="demo")
+    assert svc.pending_orders() == [str(order_payload(design["id"])["id"])]
+    settings.resume_print_work = True
+    again = create_app(settings)
+    try:
+        for _ in range(100):
+            if not svc.pending_orders():
+                break
+            time.sleep(0.1)
+        item = svc.db.one("SELECT * FROM order_items")
+        assert item["status"] == "ready" and item["print_file"]
+    finally:
+        again.state.services.db.close()
+
+
+def test_the_demo_store_does_not_show_a_real_order(client, svc, template):
+    design = approved_design(client)
+    payload = order_payload(design["id"])
+    svc.record_order({**payload, "customer": {"first_name": "Private", "last_name": "Person"}}, source="shopify")
+    page = client.get(f"/demo-store/orders/{payload['id']}")
+    assert page.status_code == 200 and "Private" not in page.text and design["id"] not in page.text
+
+
+def test_admin_pages_refuse_to_be_framed(admin, client):
+    assert admin.get("/admin").headers["content-security-policy"] == "frame-ancestors 'none'"
+    assert "frame-ancestors 'self'" in client.get("/editor/wedding-invitation").headers["content-security-policy"]

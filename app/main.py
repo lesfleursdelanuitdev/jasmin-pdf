@@ -12,12 +12,14 @@ import json
 import logging
 import re
 import secrets
+import threading
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 import httpx
 
@@ -30,6 +32,8 @@ from .services import Invalid, NotFound, Services
 from .storage import Storage, StorageError
 
 STATIC = ROOT / "static"
+# The admin and its sign-in page are never shown inside another page (the customer editor is: see frame_headers).
+NO_FRAMING = {"Content-Security-Policy": "frame-ancestors 'none'", "X-Frame-Options": "DENY", "Referrer-Policy": "same-origin"}
 log = logging.getLogger("jasmin")
 
 
@@ -133,13 +137,13 @@ def create_app(
         def admin_page(request: Request):
             if auth.read(request.cookies.get(COOKIE)) is None:
                 return RedirectResponse("/admin/login", status_code=303)
-            return FileResponse(STATIC / "admin.html", headers={"Cache-Control": "no-store"})
+            return FileResponse(STATIC / "admin.html", headers={"Cache-Control": "no-store", **NO_FRAMING})
 
         def login_page(message: str = "", email: str = "", status: int = 200) -> HTMLResponse:
             page = (STATIC / "login.html").read_text(encoding="utf-8")
             notice = f'<p class="notice notice-bad" role="alert">{html.escape(message)}</p>' if message else ""
             page = page.replace("<!--message-->", notice).replace("{{email}}", html.escape(email, quote=True))
-            return HTMLResponse(page, status_code=status, headers={"Cache-Control": "no-store"})
+            return HTMLResponse(page, status_code=status, headers={"Cache-Control": "no-store", **NO_FRAMING})
 
         @app.get("/admin/login", include_in_schema=False)
         def login_form(request: Request):
@@ -181,7 +185,7 @@ def create_app(
 
         @app.get("/admin", include_in_schema=False, dependencies=[Depends(require_admin)])
         def admin_page():
-            return FileResponse(STATIC / "admin.html")
+            return FileResponse(STATIC / "admin.html", headers=NO_FRAMING)
 
         @app.get("/admin/login", include_in_schema=False)
         def login_form():
@@ -215,7 +219,8 @@ def create_app(
     @app.post("/api/uploads")
     async def upload(file: UploadFile = File(...)):
         data = await file.read()
-        return svc.save_upload(file.filename or "photo", data)
+        # Decoding and storing take seconds: on a worker thread, or every other request waits.
+        return await run_in_threadpool(svc.save_upload, file.filename or "photo", data)
 
     @app.get("/api/uploads/{upload_id}")
     def upload_info(upload_id: str):
@@ -234,7 +239,7 @@ def create_app(
     @app.post("/api/designs")
     async def create_design(request: Request):
         body = await request.json()
-        d = svc.create_design(str(body.get("templateId", "")), body.get("values") or {})
+        d = await run_in_threadpool(svc.create_design, str(body.get("templateId", "")), body.get("values") or {})
         return svc.design_public(d)
 
     @app.get("/api/designs/{design_id}")
@@ -244,7 +249,7 @@ def create_app(
     @app.put("/api/designs/{design_id}")
     async def update_design(design_id: str, request: Request):
         body = await request.json()
-        return svc.design_public(svc.update_design(design_id, body.get("values") or {}))
+        return svc.design_public(await run_in_threadpool(svc.update_design, design_id, body.get("values") or {}))
 
     @app.post("/api/designs/{design_id}/proof")
     def proof(design_id: str):
@@ -278,10 +283,22 @@ def create_app(
 
     app.state.process_order = process_order
 
+    def resume_print_work() -> None:
+        """Print files that were being made when the app last stopped are made now."""
+        try:
+            for order_id in svc.pending_orders():
+                log.info("resuming print files for order %s", order_id)
+                process_order(order_id)
+        except Exception:  # the app must come up regardless; the items stay visible as pending
+            log.exception("could not resume unfinished print files")
+
+    if settings.resume_print_work:
+        threading.Thread(target=resume_print_work, name="jasmin-resume-print", daemon=True).start()
+
     @app.post("/webhooks/shopify/orders-create")
     async def orders_create(request: Request, background: BackgroundTasks):
         body = await request.body()
-        if not shopify.verify_webhook(body, request.headers.get("X-Shopify-Hmac-Sha256"), settings.webhook_secret):
+        if not shopify.verify_webhook(body, request.headers.get("X-Shopify-Hmac-Sha256"), settings.webhook_secrets):
             return JSONResponse({"detail": "invalid signature"}, status_code=401)
         shop = request.headers.get("X-Shopify-Shop-Domain", "")
         if settings.shopify_shop_domain and shop and shop != settings.shopify_shop_domain:
@@ -291,7 +308,7 @@ def create_app(
         except ValueError:
             return JSONResponse({"detail": "invalid JSON"}, status_code=400)
         source = "demo" if request.headers.get("X-Jasmin-Demo") == "1" else "shopify"
-        order = svc.record_order(payload, source=source, shop=shop)
+        order = await run_in_threadpool(svc.record_order, payload, source=source, shop=shop)
         if order is not None:
             background.add_task(process_order, order["id"])
         # Shopify only needs a fast 2xx; processing continues in the background.
@@ -335,15 +352,15 @@ def create_app(
         if auth.throttled(f"password:{email}"):
             return JSONResponse({"detail": "Too many attempts. Wait a few minutes and try again."}, status_code=429)
         body = await request.json()
-        auth.change_password(email, str(body.get("current", "")), str(body.get("new", "")))
+        await run_in_threadpool(auth.change_password, email, str(body.get("current", "")), str(body.get("new", "")))
         return {"ok": True}
 
     @app.post("/admin/api/admins", dependencies=admin)
     async def add_admin(request: Request):
         email = signed_in(request)
         body = await request.json()
-        auth.add_admin(str(body.get("email", "")), str(body.get("password", "")), email)
-        return account_out()
+        await run_in_threadpool(auth.add_admin, str(body.get("email", "")), str(body.get("password", "")), email)
+        return await run_in_threadpool(account_out)
 
     @app.delete("/admin/api/admins/{address}", dependencies=admin)
     def remove_admin(address: str, request: Request):
@@ -372,7 +389,7 @@ def create_app(
     @app.post("/admin/api/templates", dependencies=admin)
     async def create_template(name: str = Form(...), file: UploadFile = File(...)):
         data = await file.read()
-        return template_admin(svc.create_template(name.strip() or "Untitled", data))
+        return template_admin(await run_in_threadpool(svc.create_template, name.strip() or "Untitled", data))
 
     @app.get("/admin/api/templates/{template_id}", dependencies=admin)
     def admin_get_template(template_id: str):
@@ -380,7 +397,7 @@ def create_app(
 
     @app.patch("/admin/api/templates/{template_id}", dependencies=admin)
     async def admin_update_template(template_id: str, request: Request):
-        return template_admin(svc.update_template(template_id, await request.json()))
+        return template_admin(await run_in_threadpool(svc.update_template, template_id, await request.json()))
 
     @app.delete("/admin/api/templates/{template_id}", dependencies=admin)
     def admin_delete_template(template_id: str):
@@ -398,9 +415,14 @@ def create_app(
 
     @app.post("/admin/api/fonts", dependencies=admin)
     async def upload_font(file: UploadFile = File(...)):
-        info = svc.fonts.add_upload(file.filename or "font.ttf", await file.read())
-        svc.storage.put(f"fonts/{info.path.name}")
-        return info.public()
+        data = await file.read()
+
+        def add() -> dict:
+            info = svc.fonts.add_upload(file.filename or "font.ttf", data)
+            svc.storage.put(f"fonts/{info.path.name}")
+            return info.public()
+
+        return await run_in_threadpool(add)
 
     @app.get("/admin/api/orders", dependencies=admin)
     def list_orders():
@@ -413,10 +435,14 @@ def create_app(
     @app.post("/admin/api/orders/{order_id}/status", dependencies=admin)
     async def order_status(order_id: str, request: Request):
         status = (await request.json()).get("status", "")
-        order = svc.set_order_status(order_id, status)
-        if status in ("in_production", "shipped"):
-            shop_admin.add_order_tags(order_id, [f"jasmin-{status.replace('_', '-')}"])
-        return order
+
+        def change() -> dict:
+            order = svc.set_order_status(order_id, status)
+            if status in ("in_production", "shipped"):
+                shop_admin.add_order_tags(order_id, [f"jasmin-{status.replace('_', '-')}"])
+            return order
+
+        return await run_in_threadpool(change)
 
     @app.post("/admin/api/order-items/{item_id}/regenerate", dependencies=admin)
     def regenerate(item_id: int):

@@ -40,10 +40,13 @@ def sign(body: bytes, secret: str) -> str:
     return base64.b64encode(hmac.new(secret.encode(), body, hashlib.sha256).digest()).decode()
 
 
-def verify_webhook(body: bytes, header: str | None, secret: str) -> bool:
-    if not header or not secret:
+def verify_webhook(body: bytes, header: str | None, secret: str | list[str]) -> bool:
+    """Whether the signature matches the body under the secret, or under any of several."""
+    secrets_ = [secret] if isinstance(secret, str) else secret
+    if not header:
         return False
-    return hmac.compare_digest(sign(body, secret), header.strip())
+    # Every candidate is compared, so the time taken does not tell which one matched.
+    return any([hmac.compare_digest(sign(body, s), header.strip()) for s in secrets_ if s])
 
 
 def liquid_snippet(app_url: str) -> str:
